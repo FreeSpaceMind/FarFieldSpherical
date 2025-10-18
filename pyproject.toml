@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools_scm>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "farfield-spherical"
+version = "1.0.0"
+description = "Core library for spherical far-field antenna pattern analysis"
+authors = [{name = "Justin Long", email = "justinwlong1@gmail.com"}]
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+
+keywords = ["antenna", "far-field", "spherical", "pattern", "radiation"]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
+
+dependencies = [
+    "numpy>=1.21.0",
+    "scipy>=1.7.0",
+    "xarray>=0.19.0",
+]
+
+[project.optional-dependencies]
+swe = [
+    "swe>=0.1.0",  # Your SWE package for spherical wave expansion
+]
+
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=3.0.0",
+    "black>=22.0.0",
+    "flake8>=4.0.0",
+    "mypy>=0.950",
+]
+
+docs = [
+    "sphinx>=4.0.0",
+    "sphinx-rtd-theme>=1.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/farfield-spherical"
+Documentation = "https://farfield-spherical.readthedocs.io"
+Repository = "https://github.com/yourusername/farfield-spherical"
+"Bug Tracker" = "https://github.com/yourusername/farfield-spherical/issues"
+
+[tool.setuptools]
+packages = ["farfield_spherical", "farfield_spherical.io"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--strict-markers --cov=farfield_spherical"
+
+[tool.black]
+line-length = 100
+target-version = ['py39']
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
