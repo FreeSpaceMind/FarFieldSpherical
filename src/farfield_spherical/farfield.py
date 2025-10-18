@@ -295,51 +295,103 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         
         # Clear cache as polarization has changed
         self.clear_cache()
-    
-    def get_gain_db(self, component: str = 'e_co') -> np.ndarray:
+
+    def find_phase_center(self, theta_angle: float, frequency: Optional[float] = None, 
+                        n_iter: int = 10) -> np.ndarray:
         """
-        Get gain in dB for specified component.
+        Finds the optimum phase center given a theta angle and frequency.
+        
+        Args:
+            theta_angle: Angle in degrees to optimize phase center for
+            frequency: Optional specific frequency to use, or None to use first frequency
+            n_iter: Number of iterations for basinhopping
+            
+        Returns:
+            np.ndarray: [x, y, z] coordinates of the optimum phase center
+        """
+        return calculate_phase_center(self, theta_angle, frequency, n_iter)
+
+    def shift_to_phase_center(self, theta_angle: float, frequency: Optional[float] = None,
+                            n_iter: int = 10) -> np.ndarray:
+        """
+        Find the phase center and shift the pattern to it.
+        
+        Args:
+            theta_angle: Angle in degrees to optimize phase center for
+            frequency: Optional specific frequency to use
+            n_iter: Number of iterations for basinhopping
+            
+        Returns:
+            np.ndarray: The translation vector used
+        """  
+        translation = calculate_phase_center(self, theta_angle, frequency, n_iter)
+        self.translate(translation)
+        
+        if hasattr(self, 'metadata') and self.metadata is not None:
+            if 'operations' not in self.metadata:
+                self.metadata['operations'] = []
+            self.metadata['operations'].append({
+                'type': 'shift_to_phase_center',
+                'theta_angle': theta_angle,
+                'frequency': frequency,
+                'translation': translation.tolist() if hasattr(translation, 'tolist') else translation,
+                'n_iter': n_iter
+            })
+        
+        return translation
+
+    def get_gain_db(self, component: str = 'e_co') -> xr.DataArray:
+        """
+        Get gain in dB for a specific field component.
         
         Args:
             component: Field component ('e_co', 'e_cx', 'e_theta', 'e_phi')
             
         Returns:
-            Array of gain values in dB with shape (frequency, theta, phi)
+            xr.DataArray: Gain in dB
         """
-        if component not in self.data:
-            raise ValueError(f"Component {component} not in data")
-        
-        field = self.data[component].values
-        gain_linear = np.abs(field)**2
-        gain_db = 10 * np.log10(np.maximum(gain_linear, 1e-30))
-        
-        return gain_db
-    
-    def get_phase(self, component: str = 'e_co', unwrapped: bool = False) -> np.ndarray:
+        cache_key = f"gain_db_{component}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+            
+        result = 20 * np.log10(np.abs(self.data[component]))
+        self._cache[cache_key] = result
+        return result
+
+    def get_phase(self, component: str = 'e_co', unwrapped: bool = False) -> xr.DataArray:
         """
-        Get phase in degrees for specified component.
+        Get phase for a specific field component.
         
         Args:
             component: Field component ('e_co', 'e_cx', 'e_theta', 'e_phi')
-            unwrapped: If True, unwrap phase discontinuities
+            unwrapped: If True, return unwrapped phase (no 2π discontinuities)
             
         Returns:
-            Array of phase values in degrees with shape (frequency, theta, phi)
+            xr.DataArray: Phase in radians
         """
+        from .pattern_operations import unwrap_phase
+
         if component not in self.data:
-            raise ValueError(f"Component {component} not in data")
+            raise KeyError(f"Component {component} not found in pattern data.")
         
-        field = self.data[component].values
-        phase_rad = np.angle(field)
+        cache_key = f"phase_{component}_{'unwrapped' if unwrapped else 'wrapped'}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        
+        phase = np.angle(self.data[component].values)
         
         if unwrapped:
-            # Unwrap along theta axis
-            phase_rad = np.unwrap(phase_rad, axis=1)
+            phase = unwrap_phase(phase, axis=1)
         
-        phase_deg = np.degrees(phase_rad)
+        result = xr.DataArray(
+            phase,
+            coords=self.data[component].coords,
+            dims=self.data[component].dims
+        )
         
-        return phase_deg
-    
+        self._cache[cache_key] = result
+        return result
+        
     def get_axial_ratio(self) -> np.ndarray:
         """
         Calculate axial ratio in dB.
