@@ -487,12 +487,12 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         
         # Use context manager to get single frequency
         with self.at_frequency(frequency) as single_freq_pattern:
-            swe_obj = SphericalWaveExpansion.from_farfield(
-                pattern=single_freq_pattern,
-                radius=radius,
-                adaptive=adaptive,
-                NMAX=NMAX,
-                MMAX=MMAX
+            swe_obj = SphericalWaveExpansion.from_far_field(
+                theta=np.radians(self.theta_angles),
+                phi=np.radians(self.phi_angles),
+                E_theta=single_freq_pattern.data.e_theta.values,
+                E_phi=single_freq_pattern.data.e_phi.values,
+                frequency=frequency,
             )
         
         return swe_obj
