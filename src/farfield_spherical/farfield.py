@@ -219,81 +219,77 @@ class FarFieldSpherical(FarFieldOperationsMixin):
     
     def assign_polarization(self, polarization: Optional[str] = None) -> None:
         """
-        Assign a polarization to the far-field pattern and compute e_co and e_cx.
+        Assign a polarization to the antenna pattern and compute e_co and e_cx.
         
         If polarization is None, it is automatically determined based on which 
         polarization component has the highest peak gain.
         
         Args:
-            polarization: Polarization type to assign. If None, automatically determined.
+            polarization: Polarization type or None to auto-detect
             
         Raises:
-            ValueError: If polarization is invalid
+            ValueError: If the specified polarization is invalid
         """
+        # Get underlying numpy arrays for calculations
+        phi = self.data.phi.values
+        e_theta = self.data.e_theta.values
+        e_phi = self.data.e_phi.values
+        
+        # Calculate different polarization components
+        e_x, e_y = polarization_tp2xy(phi, e_theta, e_phi)
+        e_r, e_l = polarization_tp2rl(phi, e_theta, e_phi)
+        
+        # Auto-detect polarization if not specified
         if polarization is None:
-            # Auto-determine polarization based on peak gain
-            e_theta_peak = np.max(np.abs(self.data.e_theta.values))
-            e_phi_peak = np.max(np.abs(self.data.e_phi.values))
+            e_x_max = np.max(np.abs(e_x))
+            e_y_max = np.max(np.abs(e_y))
+            e_r_max = np.max(np.abs(e_r))
+            e_l_max = np.max(np.abs(e_l))
             
-            if e_theta_peak > e_phi_peak:
-                polarization = 'theta'
-            else:
-                polarization = 'phi'
+            max_val = max(e_x_max, e_y_max, e_r_max, e_l_max)
             
-            logger.info(f"Auto-determined polarization: {polarization}")
+            if e_x_max == max_val:
+                polarization = "x"
+            elif e_y_max == max_val:
+                polarization = "y"
+            elif e_r_max == max_val:
+                polarization = "rhcp"
+            elif e_l_max == max_val:
+                polarization = "lhcp"
         
-        # Normalize polarization string
-        polarization = polarization.lower()
+        # Map variations to standard polarization names
+        pol_lower = polarization.lower() if polarization else ""
         
-        # Check if valid
-        if polarization not in self.VALID_POLARIZATIONS:
-            raise ValueError(
-                f"Invalid polarization: {polarization}. "
-                f"Must be one of {self.VALID_POLARIZATIONS}"
-            )
+        if pol_lower in {"rhcp", "rh", "r"}:
+            e_co, e_cx = e_r, e_l
+            standard_pol = "rhcp"
+        elif pol_lower in {"lhcp", "lh", "l"}:
+            e_co, e_cx = e_l, e_r
+            standard_pol = "lhcp"
+        elif pol_lower in {"x", "l3x"}:
+            e_co, e_cx = e_x, e_y
+            standard_pol = "x"
+        elif pol_lower in {"y", "l3y"}:
+            e_co, e_cx = e_y, e_x
+            standard_pol = "y"
+        elif pol_lower == "theta":
+            e_co, e_cx = e_theta, e_phi
+            standard_pol = "theta"
+        elif pol_lower == "phi":
+            e_co, e_cx = e_phi, e_theta
+            standard_pol = "phi"
+        else:
+            raise ValueError(f"Invalid polarization: {polarization}")
         
-        # Store polarization
-        self.polarization = polarization
-        
-        # Compute co-pol and cross-pol based on polarization type
-        if polarization in ('rhcp', 'rh', 'r', 'lhcp', 'lh', 'l'):
-            # Convert to circular polarization
-            e_r, e_l = polarization_tp2rl(
-                self.data.e_theta.values,
-                self.data.e_phi.values
-            )
-            
-            if polarization in ('rhcp', 'rh', 'r'):
-                self.data['e_co'] = (('frequency', 'theta', 'phi'), e_r)
-                self.data['e_cx'] = (('frequency', 'theta', 'phi'), e_l)
-            else:  # LHCP
-                self.data['e_co'] = (('frequency', 'theta', 'phi'), e_l)
-                self.data['e_cx'] = (('frequency', 'theta', 'phi'), e_r)
-                
-        elif polarization in ('x', 'l3x', 'y', 'l3y'):
-            # Convert to Ludwig-3 linear polarization
-            e_x, e_y = polarization_tp2xy(
-                self.data.phi.values,
-                self.data.e_theta.values,
-                self.data.e_phi.values
-            )
-            
-            if polarization in ('x', 'l3x'):
-                self.data['e_co'] = (('frequency', 'theta', 'phi'), e_x)
-                self.data['e_cx'] = (('frequency', 'theta', 'phi'), e_y)
-            else:  # Y polarization
-                self.data['e_co'] = (('frequency', 'theta', 'phi'), e_y)
-                self.data['e_cx'] = (('frequency', 'theta', 'phi'), e_x)
-                
-        elif polarization == 'theta':
-            self.data['e_co'] = self.data.e_theta
-            self.data['e_cx'] = self.data.e_phi
-            
-        else:  # phi polarization
-            self.data['e_co'] = self.data.e_phi
-            self.data['e_cx'] = self.data.e_theta
-        
-        # Clear cache as polarization has changed
+        # Store polarization components and type
+        self.data['e_co'] = (('frequency', 'theta', 'phi'), e_co)
+        self.data['e_cx'] = (('frequency', 'theta', 'phi'), e_cx)
+        self.polarization = standard_pol
+
+        # Update metadata
+        if self.metadata is not None:
+            self.metadata['polarization'] = standard_pol
+
         self.clear_cache()
 
     def find_phase_center(self, theta_angle: float, frequency: Optional[float] = None, 

@@ -45,7 +45,7 @@ class FarFieldOperationsMixin:
                 'new_polarization': new_polarization
             })
 
-    def translate(self, translation: np.ndarray, normalize: bool = True) -> None:
+    def translate(self, translation: np.ndarray) -> None:
         """
         Shifts the antenna phase pattern to place the origin at the location defined by the shift.
         
@@ -54,53 +54,37 @@ class FarFieldOperationsMixin:
         
         Args:
             translation: 3D translation vector [x, y, z] in meters
-            normalize: If True, normalize the boresight gain to 0 dB after translation
             
         Note:
             This modifies the pattern in-place.
+            Use normalize_phase() separately if phase normalization is needed.
         """
         from .pattern_operations import phase_pattern_translate
         
+        # Convert angles to radians for phase_pattern_translate
+        theta_rad = np.radians(self.theta_angles)
+        phi_rad = np.radians(self.phi_angles)
+        
         # Apply translation to each frequency
         for freq_idx, freq in enumerate(self.frequencies):
-            wavelength = lightspeed / freq
-            k = 2 * np.pi / wavelength
-            
-            # Apply phase shift
-            self.data.e_theta.values[freq_idx] = phase_pattern_translate(
-                self.theta_angles,
-                self.phi_angles,
-                self.data.e_theta.values[freq_idx],
-                translation,
-                k
+            # Apply phase shift to theta component
+            phase_e_theta = np.angle(self.data.e_theta.values[freq_idx])
+            shifted_phase_theta = phase_pattern_translate(
+                freq, theta_rad, phi_rad, translation, phase_e_theta
             )
+            mag_e_theta = np.abs(self.data.e_theta.values[freq_idx])
+            self.data.e_theta.values[freq_idx] = mag_e_theta * np.exp(1j * shifted_phase_theta)
             
-            self.data.e_phi.values[freq_idx] = phase_pattern_translate(
-                self.theta_angles,
-                self.phi_angles,
-                self.data.e_phi.values[freq_idx],
-                translation,
-                k
+            # Apply phase shift to phi component  
+            phase_e_phi = np.angle(self.data.e_phi.values[freq_idx])
+            shifted_phase_phi = phase_pattern_translate(
+                freq, theta_rad, phi_rad, translation, phase_e_phi
             )
+            mag_e_phi = np.abs(self.data.e_phi.values[freq_idx])
+            self.data.e_phi.values[freq_idx] = mag_e_phi * np.exp(1j * shifted_phase_phi)
         
         # Recompute co/cx polarization
         self.assign_polarization(self.polarization)
-        
-        # Normalize if requested
-        if normalize:
-            # Find boresight (theta=0)
-            theta_idx = np.argmin(np.abs(self.theta_angles))
-            boresight_gain = np.abs(self.data.e_co.values[:, theta_idx, 0])**2
-            
-            # Normalize each frequency
-            for freq_idx in range(len(self.frequencies)):
-                norm_factor = np.sqrt(boresight_gain[freq_idx])
-                if norm_factor > 0:
-                    self.data.e_theta.values[freq_idx] /= norm_factor
-                    self.data.e_phi.values[freq_idx] /= norm_factor
-            
-            # Recompute co/cx after normalization
-            self.assign_polarization(self.polarization)
         
         # Clear cache
         self.clear_cache()
@@ -111,8 +95,7 @@ class FarFieldOperationsMixin:
                 self.metadata['operations'] = []
             self.metadata['operations'].append({
                 'type': 'translate',
-                'translation': translation.tolist(),
-                'normalize': normalize
+                'translation': translation.tolist()
             })
 
     def normalize_phase(self, reference_theta=0, reference_phi=0) -> None:
@@ -428,6 +411,19 @@ class FarFieldOperationsMixin:
         e_phi = self.data.e_phi.values.copy()
         frequencies = self.frequencies
         
+        # NORMALIZE PHI to 0-360 range first
+        if np.any(phi < 0):
+            # Phi has negative values, normalize to 0-360
+            phi_normalized = np.mod(phi, 360)
+            
+            # Sort to maintain ascending order
+            sort_indices = np.argsort(phi_normalized)
+            phi = phi_normalized[sort_indices]
+            
+            # Reorder field components along phi axis
+            e_theta = e_theta[:, :, sort_indices]
+            e_phi = e_phi[:, :, sort_indices]
+
         # Check current format
         theta_min, theta_max = np.min(theta), np.max(theta)
         phi_min, phi_max = np.min(phi), np.max(phi)
@@ -538,8 +534,8 @@ class FarFieldOperationsMixin:
         # Now create a completely new Dataset with the new coordinates and data
         new_data = xr.Dataset(
             data_vars={
-                'e_theta': (['frequency', 'theta', 'phi'], new_e_theta),
-                'e_phi': (['frequency', 'theta', 'phi'], new_e_phi),
+                'e_theta': (('frequency', 'theta', 'phi'), new_e_theta), 
+                'e_phi': (('frequency', 'theta', 'phi'), new_e_phi), 
             },
             coords={
                 'theta': new_theta,
@@ -1072,8 +1068,8 @@ class FarFieldOperationsMixin:
         # Create new xarray Dataset
         new_data = xr.Dataset(
             data_vars={
-                'e_theta': (['frequency', 'theta', 'phi'], new_e_theta),
-                'e_phi': (['frequency', 'theta', 'phi'], new_e_phi),
+                'e_theta': (('frequency', 'theta', 'phi'), new_e_theta),
+                'e_phi': (('frequency', 'theta', 'phi'), new_e_phi),
             },
             coords={
                 'theta': actual_theta,
