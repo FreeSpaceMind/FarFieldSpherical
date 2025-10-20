@@ -463,35 +463,44 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         save_pattern_npz(self, file_path, metadata)
 
     def calculate_spherical_modes(self, radius: Optional[float] = None, 
-                                frequency: Optional[float] = None,
-                                adaptive: bool = True,
-                                NMAX: Optional[int] = None,
-                                MMAX: Optional[int] = None) -> 'SphericalWaveExpansion':
-        """
-        Calculate spherical wave expansion from the far-field pattern.
-        
-        Args:
-            radius: Radius for near-field calculation in meters
-            frequency: Frequency to use in Hz (if None, uses first frequency)
-            adaptive: If True, adaptively determine NMAX/MMAX
-            NMAX: Maximum mode number n
-            MMAX: Maximum mode number m
-            
-        Returns:
-            SphericalWaveExpansion object containing the modal coefficients
-        """
+                                frequency: Optional[float] = None) -> 'SphericalWaveExpansion':
+        """Calculate spherical wave expansion from the far-field pattern."""
         from swe import SphericalWaveExpansion
+        import logging
+        
+        logger = logging.getLogger(__name__)
         
         if frequency is None:
             frequency = self.frequencies[0]
         
         # Use context manager to get single frequency
         with self.at_frequency(frequency) as single_freq_pattern:
+            # Check if coordinate transformation is needed
+            if np.any(single_freq_pattern.phi_angles < 0):
+                logger.info("Transforming coordinates to 'sided' format for SWE calculation")
+                single_freq_pattern.transform_coordinates('sided')
+            
+            # Extract angle arrays and field data
+            theta_deg = single_freq_pattern.theta_angles
+            phi_deg = single_freq_pattern.phi_angles
+            theta_1d = np.radians(theta_deg)
+            phi_1d = np.radians(phi_deg)
+            E_theta_2d = single_freq_pattern.data.e_theta.values[0, :, :]
+            E_phi_2d = single_freq_pattern.data.e_phi.values[0, :, :]
+
+            # Create meshgrid and flatten for SWE (it expects flattened meshgrid arrays)
+            THETA, PHI = np.meshgrid(theta_1d, phi_1d, indexing='ij')
+            theta = THETA.ravel()
+            phi = PHI.ravel()
+            E_theta = E_theta_2d.ravel()
+            E_phi = E_phi_2d.ravel()
+
+            
             swe_obj = SphericalWaveExpansion.from_far_field(
-                theta=np.radians(self.theta_angles),
-                phi=np.radians(self.phi_angles),
-                E_theta=single_freq_pattern.data.e_theta.values,
-                E_phi=single_freq_pattern.data.e_phi.values,
+                theta=theta,
+                phi=phi,
+                E_theta=E_theta,
+                E_phi=E_phi,
                 frequency=frequency,
             )
         
