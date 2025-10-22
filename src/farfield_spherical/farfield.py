@@ -379,6 +379,9 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         if unwrapped:
             phase = unwrap_phase(phase, axis=1)
         
+        # Convert to degrees
+        phase = np.degrees(phase)
+
         result = xr.DataArray(
             phase,
             coords=self.data[component].coords,

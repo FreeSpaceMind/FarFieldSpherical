@@ -25,7 +25,7 @@ def calculate_phase_center(pattern, theta_angle: float, frequency: Optional[floa
     Uses basinhopping optimization to find the global minimum.
     
     Args:
-        pattern: AntennaPattern object
+        pattern: FarFieldSpherical object
         theta_angle: Angle in degrees to optimize phase center for
         frequency: Optional specific frequency to use, or None to use first frequency
         n_iter: Number of iterations for basinhopping
@@ -33,7 +33,13 @@ def calculate_phase_center(pattern, theta_angle: float, frequency: Optional[floa
     Returns:
         np.ndarray: [x, y, z] coordinates of the optimum phase center
     """
-        
+    # Always work in central format for symmetric +/- theta_angle handling
+    original_format = detect_coordinate_format(pattern)
+    if original_format == 'sided':
+        pattern = pattern.copy()
+        pattern.transform_coordinates('central')
+        logger.info("Converted to central format for phase center calculation")
+    
     # Get data arrays
     freq_array = pattern.data.frequency.values
     theta_array = pattern.data.theta.values
@@ -58,7 +64,7 @@ def calculate_phase_center(pattern, theta_angle: float, frequency: Optional[floa
     if isinstance(idx_p, np.ndarray):
         idx_p = idx_p.item()
     
-    # Ensure idx_n < idx_p (in case theta_array isn't sorted)
+    # Ensure idx_n < idx_p
     if idx_n > idx_p:
         idx_n, idx_p = idx_p, idx_n
     
@@ -82,7 +88,7 @@ def calculate_phase_center(pattern, theta_angle: float, frequency: Optional[floa
         # Extract the region of interest (+/- theta_angle)
         roi_phase = translated_phase[idx_n:idx_p+1, :]
         
-        # unwrap phase
+        # Unwrap phase
         unwrapped_phases = unwrap_phase(roi_phase, axis=0)
         
         # Calculate flatness metric (overall deviation from zero across whole region)
@@ -497,3 +503,42 @@ def calculate_directivity(
         peak_phi = phi_array[max_idx[1]]
         
         return float(peak_directivity), float(peak_theta), float(peak_phi)
+    
+def detect_coordinate_format(pattern) -> str:
+    """
+    Detect whether pattern data is in 'central' or 'sided' coordinate format.
+    
+    Args:
+        pattern: FarFieldSpherical object (or any object with theta_angles and phi_angles attributes)
+        
+    Returns:
+        str: 'central', 'sided', or 'unknown'
+        
+    Notes:
+        - Sided format: theta 0:180, phi 0:360 (spherical convention)
+        - Central format: theta -180:180, phi 0:180 (common for antenna patterns)
+    """
+    theta_angles = pattern.theta_angles
+    phi_angles = pattern.phi_angles
+    
+    theta_min, theta_max = np.min(theta_angles), np.max(theta_angles)
+    phi_min, phi_max = np.min(phi_angles), np.max(phi_angles)
+    
+    # Check for sided format: theta 0:180, phi 0:360
+    is_sided = (theta_min >= -5 and theta_max <= 185 and 
+                phi_min >= -5 and phi_max >= 355)
+    
+    # Check for central format: theta around ±180, phi 0:180
+    is_central = (theta_min < -5 and theta_max > 175 and
+                  phi_min >= -5 and phi_max <= 185)
+    
+    # Alternative central: theta 0:180, phi limited range
+    is_central_alt = (theta_min >= -5 and theta_max <= 185 and
+                      phi_min >= -5 and phi_max <= 185)
+    
+    if is_sided:
+        return 'sided'
+    elif is_central or is_central_alt:
+        return 'central'
+    else:
+        return 'unknown'

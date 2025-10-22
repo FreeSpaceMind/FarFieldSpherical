@@ -45,7 +45,8 @@ from .analysis import (
     calculate_phase_center,
     principal_plane_phase_center,
     get_axial_ratio,
-    calculate_directivity
+    calculate_directivity,
+    detect_coordinate_format
 )
 
 # Utilities
@@ -92,6 +93,7 @@ __all__ = [
     'principal_plane_phase_center',
     'get_axial_ratio',
     'calculate_directivity',
+    'detect_coordinate_format',
     'find_nearest',
     'frequency_to_wavelength',
     'wavelength_to_frequency',
