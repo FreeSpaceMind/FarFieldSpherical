@@ -55,7 +55,7 @@ def create_pattern_from_swe(swe: 'SphericalWaveExpansion',
     )
     
     # Attach SWE object
-    pattern.swe = {swe.frequency: swe}
+    pattern.swe = swe
     
     logger.info(f"Pattern created from SWE at f={swe.frequency/1e9:.3f} GHz")
     return pattern
