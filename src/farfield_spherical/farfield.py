@@ -193,7 +193,7 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         from .io.swe_utils import create_pattern_from_swe
 
         # Read SWE coefficients
-        swe_data = read_ticra_sph(file_path, frequency)
+        swe_data = read_ticra_sph(file_path)
 
         # Create pattern from coefficients
         pattern = create_pattern_from_swe(swe_data, theta_angles, phi_angles)
@@ -511,11 +511,11 @@ class FarFieldSpherical(FarFieldOperationsMixin):
                                  phi_cut: float = 0.0) -> float:
         """
         Find the beamwidth at a specified dB level below peak.
-        
+
         This method finds the half-angle beamwidth where the pattern drops
         to the specified dB level below the peak. Useful for determining
         the angular extent for phase center calculations.
-        
+
         Args:
             db_level: dB level below peak (should be negative, e.g., -10)
             frequency: Frequency to use (defaults to first frequency)
@@ -533,77 +533,76 @@ class FarFieldSpherical(FarFieldOperationsMixin):
             - The beamwidth is measured from the peak location to the crossing point
             - If the pattern doesn't drop to the specified level, uses maximum angle
             - Interpolation is used for accurate crossing point determination
+            - Pattern is temporarily converted to sided coordinates for consistent calculation
         """
+        import logging
         from .utilities import find_nearest
-        
-        # Get frequency index
-        if frequency is None:
-            freq_idx = 0
-        else:
-            _, freq_idx = find_nearest(self.frequencies, frequency)
-            if isinstance(freq_idx, np.ndarray):
-                freq_idx = freq_idx.item()
-        
-        # Get co-pol data and convert to dB
-        e_co = self.data.e_co.values[freq_idx, :, :]
-        power_linear = np.abs(e_co) ** 2
-        power_db = 10 * np.log10(np.maximum(power_linear, 1e-30))
-        
-        # Find peak (assume near boresight)
-        peak_db = np.max(power_db)
-        target_db = peak_db + db_level  # db_level is negative
-        
-        # Find phi cut index
-        phi_idx, _ = find_nearest(self.phi_angles, phi_cut)
-        if isinstance(phi_idx, np.ndarray):
-            phi_idx = phi_idx.item()
-        
-        # Get theta cut at specified phi
-        theta_cut_db = power_db[:, phi_idx]
-        theta_angles = self.theta_angles
-        
-        # Find peak location in theta cut
-        peak_theta_idx = np.argmax(theta_cut_db)
-        peak_theta = theta_angles[peak_theta_idx]
-        
-        # Find where the pattern crosses the target level
-        # Search forward from peak
-        forward_idx = peak_theta_idx
-        while forward_idx < len(theta_cut_db) - 1 and theta_cut_db[forward_idx] >= target_db:
-            forward_idx += 1
-        
-        # Interpolate for exact crossing
-        if forward_idx < len(theta_cut_db) - 1 and forward_idx > peak_theta_idx:
-            # Linear interpolation between points
-            db1 = theta_cut_db[forward_idx - 1]
-            db2 = theta_cut_db[forward_idx]
-            theta1 = theta_angles[forward_idx - 1]
-            theta2 = theta_angles[forward_idx]
+
+        logger = logging.getLogger(__name__)
+
+        # Work with a copy in sided coordinates for consistent behavior
+        with self.at_frequency(frequency) as single_freq:
+            working_pattern = single_freq.copy()
+            working_pattern.transform_coordinates('sided')
             
-            # Avoid division by zero
-            if abs(db2 - db1) > 1e-10:
-                frac = (target_db - db1) / (db2 - db1)
-                beamwidth_theta = theta1 + frac * (theta2 - theta1)
+            # Get co-pol data and convert to dB
+            e_co = working_pattern.data.e_co.values[0, :, :]
+            power_linear = np.abs(e_co) ** 2
+            power_db = 10 * np.log10(np.maximum(power_linear, 1e-30))
+            
+            # Find peak
+            peak_db = np.max(power_db)
+            target_db = peak_db + db_level  # db_level is negative
+            
+            # Find phi cut index
+            phi_angles = working_pattern.phi_angles
+            phi_idx, _ = find_nearest(phi_angles, phi_cut)
+            if isinstance(phi_idx, np.ndarray):
+                phi_idx = phi_idx.item()
+            
+            # Get theta cut at specified phi
+            theta_angles = working_pattern.theta_angles
+            theta_cut_db = power_db[:, phi_idx]
+            
+            # Find peak location in theta cut
+            peak_theta_idx = np.argmax(theta_cut_db)
+            peak_theta = theta_angles[peak_theta_idx]
+            
+            # Search forward from peak for crossing point
+            forward_idx = peak_theta_idx
+            while forward_idx < len(theta_cut_db) - 1 and theta_cut_db[forward_idx] >= target_db:
+                forward_idx += 1
+            
+            # Interpolate for exact crossing
+            if forward_idx > peak_theta_idx and forward_idx < len(theta_cut_db):
+                # Linear interpolation between points
+                db1 = theta_cut_db[forward_idx - 1]
+                db2 = theta_cut_db[forward_idx]
+                theta1 = theta_angles[forward_idx - 1]
+                theta2 = theta_angles[forward_idx]
+                
+                if abs(db2 - db1) > 1e-10:
+                    frac = (target_db - db1) / (db2 - db1)
+                    beamwidth_theta = theta1 + frac * (theta2 - theta1)
+                else:
+                    beamwidth_theta = theta1
             else:
-                beamwidth_theta = theta1
-        else:
-            # Use the index directly if no interpolation possible
-            if forward_idx < len(theta_angles):
-                beamwidth_theta = theta_angles[forward_idx]
-            else:
-                # Pattern didn't drop to target level - use last angle
-                beamwidth_theta = theta_angles[-1]
+                # Pattern didn't drop to target level
+                if forward_idx < len(theta_angles):
+                    beamwidth_theta = theta_angles[forward_idx]
+                else:
+                    beamwidth_theta = theta_angles[-1]
                 logger.warning(
                     f"Pattern did not drop to {db_level} dB level. "
                     f"Using maximum angle: {beamwidth_theta:.2f}°"
                 )
-        
-        # Return half-angle beamwidth (relative to peak)
-        half_angle = abs(beamwidth_theta - peak_theta)
-        
-        logger.info(
-            f"Beamwidth at {db_level:.1f} dB: {half_angle:.2f}° "
-            f"(peak at θ={peak_theta:.2f}°, φ={phi_cut:.2f}°)"
-        )
-        
-        return half_angle
+            
+            # Return half-angle beamwidth (relative to peak)
+            half_angle = abs(beamwidth_theta - peak_theta)
+            
+            logger.info(
+                f"Beamwidth at {db_level:.1f} dB: {half_angle:.2f}° "
+                f"(peak at θ={peak_theta:.2f}°, φ={phi_cut:.2f}°)"
+            )
+            
+            return half_angle
