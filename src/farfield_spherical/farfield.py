@@ -545,10 +545,13 @@ class FarFieldSpherical(FarFieldOperationsMixin):
             working_pattern = single_freq.copy()
             working_pattern.transform_coordinates('sided')
             
-            # Get co-pol data and convert to dB
-            e_co = working_pattern.data.e_co.values[0, :, :]
+            # Get co-pol data and convert to dB (suppress divide by zero warnings)
+            e_co = self.data.e_co.values[freq_idx, :, :]
             power_linear = np.abs(e_co) ** 2
-            power_db = 10 * np.log10(np.maximum(power_linear, 1e-30))
+            # Avoid log10(0) warnings
+            with np.errstate(divide='ignore', invalid='ignore'):
+                power_db = 10 * np.log10(np.maximum(power_linear, 1e-30))
+            power_db = np.nan_to_num(power_db, nan=-300.0, neginf=-300.0)
             
             # Find peak
             peak_db = np.max(power_db)
@@ -556,7 +559,7 @@ class FarFieldSpherical(FarFieldOperationsMixin):
             
             # Find phi cut index
             phi_angles = working_pattern.phi_angles
-            phi_idx, _ = find_nearest(phi_angles, phi_cut)
+            _, phi_idx = find_nearest(phi_angles, phi_cut)
             if isinstance(phi_idx, np.ndarray):
                 phi_idx = phi_idx.item()
             
