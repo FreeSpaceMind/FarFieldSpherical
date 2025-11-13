@@ -398,10 +398,7 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         Returns:
             Array of axial ratio values in dB with shape (frequency, theta, phi)
         """
-        ar = get_axial_ratio(
-            self.data.e_theta.values,
-            self.data.e_phi.values
-        )
+        ar = get_axial_ratio(self)
         
         return ar
     

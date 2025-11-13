@@ -151,3 +151,4 @@ def interpolate_crossing(x: np.ndarray, y: np.ndarray, threshold: float) -> floa
         Interpolated x value at the crossing
     """
     return x[0] + (threshold - y[0]) * (x[1] - x[0]) / (y[1] - y[0])
+
