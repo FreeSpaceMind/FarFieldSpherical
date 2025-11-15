@@ -475,10 +475,7 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         
         # Use context manager to get single frequency
         with self.at_frequency(frequency) as single_freq_pattern:
-            # Check if coordinate transformation is needed
-            if np.any(single_freq_pattern.phi_angles < 0):
-                logger.info("Transforming coordinates to 'sided' format for SWE calculation")
-                single_freq_pattern.transform_coordinates('sided')
+            single_freq_pattern.transform_coordinates('sided')
             
             # Extract angle arrays and field data
             theta_deg = single_freq_pattern.theta_angles
