@@ -2,7 +2,6 @@
 Analysis functions for antenna radiation patterns.
 """
 import numpy as np
-import logging
 from scipy import optimize
 from typing import Dict, Tuple, Optional, List, Union
 import xarray as xr
@@ -10,9 +9,6 @@ import xarray as xr
 from .utilities import find_nearest, frequency_to_wavelength
 from .pattern_operations import unwrap_phase, phase_pattern_translate
 from .polarization import polarization_tp2rl
-
-# Configure logging
-logger = logging.getLogger(__name__)
 
 
 def calculate_phase_center(pattern, theta_angle: float, frequency: Optional[float] = None, 
@@ -38,7 +34,6 @@ def calculate_phase_center(pattern, theta_angle: float, frequency: Optional[floa
     if original_format == 'sided':
         pattern = pattern.copy()
         pattern.transform_coordinates('central')
-        logger.info("Converted to central format for phase center calculation")
     
     # Get data arrays
     freq_array = pattern.data.frequency.values
@@ -141,13 +136,11 @@ def calculate_phase_center(pattern, theta_angle: float, frequency: Optional[floa
     
     # Check for reasonable results
     if np.any(np.isnan(translation)) or np.any(np.isinf(translation)):
-        logger.warning("Optimization returned invalid values, using zeros")
         translation = np.zeros(3)
         
     # Limit to reasonable range
     max_value = 2  # 2 meters
     if np.any(np.abs(translation) > max_value):
-        logger.warning(f"Limiting excessive translation values: {translation}")
         translation = np.clip(translation, -max_value, max_value)
         
     return translation
@@ -186,7 +179,6 @@ def principal_plane_phase_center(frequency, theta1, theta2, theta3, phase1, phas
     
     # Avoid division by zero
     if np.any(np.abs(denom1) < 1e-10):
-        logger.warning("Small denominator detected in phase center calculation")
         denom1 = np.where(np.abs(denom1) < 1e-10, 1e-10 * np.sign(denom1), denom1)
     
     planar_displacement = (1 / wavenumber) * (
@@ -206,7 +198,6 @@ def principal_plane_phase_center(frequency, theta1, theta2, theta3, phase1, phas
     # Check for invalid results
     if np.any(np.isnan(planar_displacement)) or np.any(np.isinf(planar_displacement)) or \
         np.any(np.isnan(zaxis_displacement)) or np.any(np.isinf(zaxis_displacement)):
-        logger.warning("Phase center calculation produced invalid values")
         return np.zeros_like(planar_displacement), np.zeros_like(zaxis_displacement)
     
     return planar_displacement.flatten(), zaxis_displacement.flatten()
@@ -377,7 +368,6 @@ def calculate_directivity(
     
     # Handle single point case
     if len(theta_rad) == 1 or len(phi_rad) == 1:
-        logger.warning("Pattern has only one theta or phi point - directivity calculation may be inaccurate")
         measured_power = np.sum(integrand) * dtheta * dphi
     else:
         measured_power = np.trapezoid(np.trapezoid(integrand, phi_rad, axis=1), theta_rad, axis=0)
@@ -386,9 +376,6 @@ def calculate_directivity(
     use_partial_sphere = (coverage_fraction < partial_sphere_threshold) or (measured_power <= 0)
     
     if use_partial_sphere:
-        logger.info(f"Using partial sphere method (coverage: {coverage_fraction:.1%})")
-        logger.info(f"Measured solid angle: {solid_angle_measured:.3f} steradians")
-        logger.info(f"Angular sampling: Δθ={np.diff(theta_array)[0]:.1f}°, Δφ={np.diff(phi_array)[0]:.1f}°")
         
         # Check if sampling might be too coarse
         peak_intensity = np.max(radiation_intensity)
@@ -408,19 +395,6 @@ def calculate_directivity(
         theta_3db_indices = np.where(theta_cut >= peak_db - 3)[0]
         theta_beamwidth = len(theta_3db_indices) * np.abs(np.diff(theta_array)[0]) if len(theta_array) > 1 else 0
         
-        logger.info(f"Estimated beamwidths: θ~{theta_beamwidth:.1f}°, φ~{phi_beamwidth:.1f}°")
-        
-        # Warn if sampling might be too coarse
-        if len(theta_array) > 1 and theta_beamwidth > 0:
-            theta_samples_per_beamwidth = theta_beamwidth / np.abs(np.diff(theta_array)[0])
-            if theta_samples_per_beamwidth < 3:
-                logger.warning(f"Theta sampling may be too coarse: {theta_samples_per_beamwidth:.1f} samples per beamwidth")
-        
-        if len(phi_array) > 1 and phi_beamwidth > 0:
-            phi_samples_per_beamwidth = phi_beamwidth / np.abs(np.diff(phi_array)[0])  
-            if phi_samples_per_beamwidth < 3:
-                logger.warning(f"Phi sampling may be too coarse: {phi_samples_per_beamwidth:.1f} samples per beamwidth")
-        
         # Estimate power in unmeasured regions
         if far_sidelobe_level_db is not None:
             # Use far sidelobe assumption - more accurate for antenna patterns
@@ -433,10 +407,6 @@ def calculate_directivity(
             
             unmeasured_power = far_sidelobe_intensity * unmeasured_solid_angle
             total_power = measured_power + unmeasured_power
-            
-            logger.info(f"Using far sidelobe assumption: {far_sidelobe_level_db} dB below peak")
-            logger.info(f"Far sidelobe intensity: {far_sidelobe_intensity:.2e}")
-            logger.info(f"Unmeasured power: {unmeasured_power:.2e}")
         else:
             # Use edge extrapolation method (original approach)
             edge_values = []
@@ -459,22 +429,14 @@ def calculate_directivity(
                 unmeasured_power = unmeasured_power_linear * unmeasured_solid_angle
                 total_power = measured_power + unmeasured_power
                 
-                logger.info(f"Using edge extrapolation with {edge_extrapolation_db} dB additional drop-off")
             else:
                 total_power = measured_power
-                logger.warning("Could not estimate edge values - using measured power only")
         
-        # Log power fractions
-        if total_power > measured_power:
-            logger.info(f"Measured power fraction: {measured_power/total_power:.1%}")
-            logger.info(f"Total power: {total_power:.2e} (measured: {measured_power:.2e})")
     else:
-        logger.info(f"Using full sphere method (coverage: {coverage_fraction:.1%})")
         total_power = measured_power
     
     # Avoid division by zero
     if total_power <= 0:
-        logger.warning("Total radiated power is zero or negative - check pattern data")
         total_power = 1e-15
     
     # Calculate directivity pattern: D(θ,φ) = 4π * U(θ,φ) / P_total

@@ -5,7 +5,6 @@ import numpy as np
 import xarray as xr
 from typing import Optional, Union, Tuple, Dict, Any, Set, Generator
 from pathlib import Path
-import logging
 from contextlib import contextmanager
 
 from .utilities import find_nearest
@@ -17,9 +16,6 @@ from .analysis import (
     )
 from .farfield_operations import FarFieldOperationsMixin
 from swe import SphericalWaveExpansion
-
-# Configure logging
-logger = logging.getLogger(__name__)
 
 class FarFieldSpherical(FarFieldOperationsMixin):
     """
@@ -466,9 +462,6 @@ class FarFieldSpherical(FarFieldOperationsMixin):
                                 frequency: Optional[float] = None) -> 'SphericalWaveExpansion':
         """Calculate spherical wave expansion from the far-field pattern."""
         from swe import SphericalWaveExpansion
-        import logging
-        
-        logger = logging.getLogger(__name__)
         
         if frequency is None:
             frequency = self.frequencies[0]
@@ -522,8 +515,6 @@ class FarFieldSpherical(FarFieldOperationsMixin):
             Beamwidth in degrees (half-angle from boresight)
         """
         from .utilities import find_nearest
-        import logging
-        logger = logging.getLogger(__name__)
         
         # Get frequency index
         if frequency is None:
@@ -588,17 +579,8 @@ class FarFieldSpherical(FarFieldOperationsMixin):
             else:
                 # Pattern didn't drop to target level - use last angle
                 beamwidth_theta = theta_angles[-1]
-                logger.warning(
-                    f"Pattern did not drop to {db_level} dB level. "
-                    f"Using maximum angle: {beamwidth_theta:.2f}°"
-                )
         
         # Return half-angle beamwidth (relative to peak)
         half_angle = abs(beamwidth_theta - peak_theta)
-        
-        logger.info(
-            f"Beamwidth at {db_level:.1f} dB: {half_angle:.2f}° "
-            f"(peak at θ={peak_theta:.2f}°, φ={phi_cut:.2f}°)"
-        )
         
         return half_angle

@@ -144,5 +144,3 @@ def write_ticra_sph(swe: 'SphericalWaveExpansion', file_path: Union[str, Path],
     """
     # Use the new module's writer
     swe.to_sph_file(str(file_path), description=id_string)
-    
-    logger.info(f"SWE coefficients exported to: {file_path}")

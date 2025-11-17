@@ -4,10 +4,6 @@ import numpy as np
 import json
 from ..farfield import FarFieldSpherical
 from swe import SphericalWaveExpansion
-import logging
-
-# Configure logging
-logger = logging.getLogger(__name__)
 
 def save_pattern_npz(pattern, file_path: Union[str, Path], metadata: Optional[Dict[str, Any]] = None) -> None:
     """
@@ -90,7 +86,6 @@ def save_pattern_npz(pattern, file_path: Union[str, Path], metadata: Optional[Di
     
     # Save data to NPZ file
     np.savez_compressed(file_path, **save_dict)
-    logger.info(f"Pattern saved to {file_path}")
 
 def load_pattern_npz(file_path: Union[str, Path]) -> Tuple:
     """
@@ -166,6 +161,5 @@ def load_pattern_npz(file_path: Union[str, Path]) -> Tuple:
                 )
                 
                 pattern.swe[float(freq)] = swe_obj
-        
-        logger.info(f"Pattern loaded from {file_path}")
+                
         return pattern, metadata

@@ -5,11 +5,8 @@ This module provides mathematical functions for converting between different
 polarization representations (spherical polarization basis, Ludwig-3 X and Y, Ludwig-3 circular).
 """
 import numpy as np
-import logging
 from typing import Tuple, Union
 
-# Configure logging
-logger = logging.getLogger(__name__)
 
 # Type aliases for clarity
 ComplexArray = Union[np.ndarray]

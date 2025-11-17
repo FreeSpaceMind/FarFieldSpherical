@@ -18,8 +18,6 @@ def read_cut(file_path: Union[str, Path], frequency_start: float, frequency_end:
     Returns:
         FarFieldSpherical: The imported antenna pattern
     """
-    import logging
-    logger = logging.getLogger(__name__)
     from ..polarization import polarization_rl2tp, polarization_xy2tp
     
     # Validate inputs
@@ -128,9 +126,9 @@ def read_cut(file_path: Union[str, Path], frequency_start: float, frequency_end:
                 if icomp not in [1, 2, 3]:
                     raise ValueError(f"Invalid polarization format (ICOMP): {icomp}")
                 if icut != 1:
-                    logger.warning(f"Unexpected ICUT value: {icut}. Expected 1 (standard polar cut)")
+                    print(f"Unexpected ICUT value: {icut}. Expected 1 (standard polar cut)")
                 if ncomp != 2:
-                    logger.warning(f"Unexpected NCOMP value: {ncomp}. Expected 2 (two field components)")
+                    print(f"Unexpected NCOMP value: {ncomp}. Expected 2 (two field components)")
                     
                 first_flag = False
             

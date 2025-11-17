@@ -3,10 +3,6 @@ from pathlib import Path
 import numpy as np
 from swe import SphericalWaveExpansion
 from ..farfield import FarFieldSpherical
-import logging
-
-# Configure logging
-logger = logging.getLogger(__name__)
 
 def create_pattern_from_swe(swe: 'SphericalWaveExpansion',
                            theta_angles: Optional[np.ndarray] = None,
@@ -57,5 +53,4 @@ def create_pattern_from_swe(swe: 'SphericalWaveExpansion',
     # Attach SWE object
     pattern.swe = swe
     
-    logger.info(f"Pattern created from SWE at f={swe.frequency/1e9:.3f} GHz")
     return pattern
