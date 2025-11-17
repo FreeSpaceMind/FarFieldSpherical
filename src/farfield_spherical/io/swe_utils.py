@@ -51,6 +51,7 @@ def create_pattern_from_swe(swe: 'SphericalWaveExpansion',
     )
     
     # Attach SWE object
-    pattern.swe = swe
-    
+    pattern.swe = {}
+    pattern.swe[swe.frequency] = swe
+        
     return pattern
