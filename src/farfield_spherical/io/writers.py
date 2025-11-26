@@ -3,7 +3,7 @@ from pathlib import Path
 
 from ..farfield import FarFieldSpherical
 from pathlib import Path
-from swe import SphericalWaveExpansion
+from swe import SphericalWaveExpansion # pyright: ignore[reportMissingImports]
 import numpy as np
 
 def write_cut(pattern, file_path: Union[str, Path], polarization_format: int = 1) -> None:
@@ -64,7 +64,7 @@ def write_cut(pattern, file_path: Union[str, Path], polarization_format: int = 1
                         
                     elif polarization_format == 2:
                         # RHCP/LHCP format
-                        from .polarization import polarization_tp2rl
+                        from ..polarization import polarization_tp2rl
                         e_r, e_l = polarization_tp2rl(
                             phi_val,
                             e_theta[freq_idx, theta_idx, phi_idx:phi_idx+1],
@@ -75,7 +75,7 @@ def write_cut(pattern, file_path: Union[str, Path], polarization_format: int = 1
                         
                     elif polarization_format == 3:
                         # X/Y format
-                        from .polarization import polarization_tp2xy
+                        from ..polarization import polarization_tp2xy
                         e_x, e_y = polarization_tp2xy(
                             phi_val,
                             e_theta[freq_idx, theta_idx, phi_idx:phi_idx+1],
@@ -135,7 +135,7 @@ def write_ticra_sph(swe: 'SphericalWaveExpansion', file_path: Union[str, Path],
                     program_tag: str = "AntPy", id_string: str = "SWE Export") -> None:
     """
     Write spherical mode coefficients to TICRA .sph format.
-    
+
     Args:
         swe: SphericalWaveExpansion object
         file_path: Output file path
@@ -144,3 +144,119 @@ def write_ticra_sph(swe: 'SphericalWaveExpansion', file_path: Union[str, Path],
     """
     # Use the new module's writer
     swe.to_sph_file(str(file_path), description=id_string)
+
+
+def write_csv(pattern, file_path: Union[str, Path],
+              components: str = 'copol',
+              include_complex: bool = False) -> None:
+    """
+    Write an antenna pattern to CSV format.
+
+    Args:
+        pattern: FarFieldSpherical object to save
+        file_path: Path to save the file to
+        components: Which components to include:
+            'copol' = co-pol and cross-pol gain/phase (default)
+            'spherical' = e_theta and e_phi gain/phase
+            'all' = all components (co-pol, cross-pol, e_theta, e_phi)
+        include_complex: If True, also include real/imaginary parts
+
+    Raises:
+        OSError: If file cannot be written
+        ValueError: If components is invalid
+
+    Example:
+        >>> pattern.write_csv('output.csv')
+        >>> pattern.write_csv('output.csv', components='all', include_complex=True)
+    """
+    file_path = Path(file_path)
+
+    # Ensure .csv extension
+    if file_path.suffix.lower() != '.csv':
+        file_path = file_path.with_suffix('.csv')
+
+    if components not in ['copol', 'spherical', 'all']:
+        raise ValueError("components must be 'copol', 'spherical', or 'all'")
+
+    # Get pattern data
+    theta = pattern.theta_angles
+    phi = pattern.phi_angles
+    frequencies = pattern.frequencies
+
+    # Build header
+    header_parts = ['frequency_hz', 'theta_deg', 'phi_deg']
+
+    if components in ['copol', 'all']:
+        header_parts.extend(['e_co_mag_db', 'e_co_phase_deg', 'e_cx_mag_db', 'e_cx_phase_deg'])
+        if include_complex:
+            header_parts.extend(['e_co_real', 'e_co_imag', 'e_cx_real', 'e_cx_imag'])
+
+    if components in ['spherical', 'all']:
+        header_parts.extend(['e_theta_mag_db', 'e_theta_phase_deg', 'e_phi_mag_db', 'e_phi_phase_deg'])
+        if include_complex:
+            header_parts.extend(['e_theta_real', 'e_theta_imag', 'e_phi_real', 'e_phi_imag'])
+
+    # Get field data
+    e_theta = pattern.data.e_theta.values
+    e_phi = pattern.data.e_phi.values
+    e_co = pattern.data.e_co.values
+    e_cx = pattern.data.e_cx.values
+
+    with open(file_path, 'w') as f:
+        # Write header
+        f.write(','.join(header_parts) + '\n')
+
+        # Write data for each frequency, theta, phi combination
+        for freq_idx, freq in enumerate(frequencies):
+            for theta_idx, theta_val in enumerate(theta):
+                for phi_idx, phi_val in enumerate(phi):
+                    # Start with coordinates
+                    row_parts = [f'{freq:.6e}', f'{theta_val:.6f}', f'{phi_val:.6f}']
+
+                    if components in ['copol', 'all']:
+                        co_val = e_co[freq_idx, theta_idx, phi_idx]
+                        cx_val = e_cx[freq_idx, theta_idx, phi_idx]
+
+                        # Magnitude in dB (handle zeros)
+                        co_mag_db = 20 * np.log10(max(np.abs(co_val), 1e-30))
+                        cx_mag_db = 20 * np.log10(max(np.abs(cx_val), 1e-30))
+
+                        # Phase in degrees
+                        co_phase = np.degrees(np.angle(co_val))
+                        cx_phase = np.degrees(np.angle(cx_val))
+
+                        row_parts.extend([
+                            f'{co_mag_db:.6f}', f'{co_phase:.6f}',
+                            f'{cx_mag_db:.6f}', f'{cx_phase:.6f}'
+                        ])
+
+                        if include_complex:
+                            row_parts.extend([
+                                f'{co_val.real:.6e}', f'{co_val.imag:.6e}',
+                                f'{cx_val.real:.6e}', f'{cx_val.imag:.6e}'
+                            ])
+
+                    if components in ['spherical', 'all']:
+                        eth_val = e_theta[freq_idx, theta_idx, phi_idx]
+                        eph_val = e_phi[freq_idx, theta_idx, phi_idx]
+
+                        # Magnitude in dB (handle zeros)
+                        eth_mag_db = 20 * np.log10(max(np.abs(eth_val), 1e-30))
+                        eph_mag_db = 20 * np.log10(max(np.abs(eph_val), 1e-30))
+
+                        # Phase in degrees
+                        eth_phase = np.degrees(np.angle(eth_val))
+                        eph_phase = np.degrees(np.angle(eph_val))
+
+                        row_parts.extend([
+                            f'{eth_mag_db:.6f}', f'{eth_phase:.6f}',
+                            f'{eph_mag_db:.6f}', f'{eph_phase:.6f}'
+                        ])
+
+                        if include_complex:
+                            row_parts.extend([
+                                f'{eth_val.real:.6e}', f'{eth_val.imag:.6e}',
+                                f'{eph_val.real:.6e}', f'{eph_val.imag:.6e}'
+                            ])
+
+                    f.write(','.join(row_parts) + '\n')

@@ -98,6 +98,59 @@ class FarFieldOperationsMixin:
                 'translation': translation.tolist()
             })
 
+    def normalize_amplitude(self, reference_value: str = 'peak') -> None:
+        """
+        Normalize the amplitude of the pattern to a reference value.
+        
+        Args:
+            reference_value: Normalization reference - 'peak' (default), 'boresight', or 'mean'
+            
+        Note:
+            This modifies the pattern in-place.
+            - 'peak': Normalizes to peak gain (0 dB at maximum)
+            - 'boresight': Normalizes to boresight gain
+            - 'mean': Normalizes to mean gain
+        """
+        # Get power patterns for all frequencies
+        power_pattern = np.abs(self.data.e_co.values)**2 + np.abs(self.data.e_cx.values)**2
+        
+        # Find normalization factors for each frequency
+        norm_factors = np.zeros(len(self.frequencies))
+        
+        for f_idx in range(len(self.frequencies)):
+            if reference_value == 'peak':
+                norm_factors[f_idx] = np.max(power_pattern[f_idx])
+            elif reference_value == 'boresight':
+                theta0_idx = np.argmin(np.abs(self.theta_angles))
+                phi0_idx = np.argmin(np.abs(self.phi_angles))
+                norm_factors[f_idx] = power_pattern[f_idx, theta0_idx, phi0_idx]
+            elif reference_value == 'mean':
+                norm_factors[f_idx] = np.mean(power_pattern[f_idx])
+            else:
+                raise ValueError(f"Unknown reference_value: {reference_value}")
+        
+        # Apply normalization (sqrt because we normalize field, not power)
+        for f_idx in range(len(self.frequencies)):
+            if norm_factors[f_idx] > 0:
+                scale = 1.0 / np.sqrt(norm_factors[f_idx])
+                self.data.e_theta.values[f_idx] *= scale
+                self.data.e_phi.values[f_idx] *= scale
+        
+        # Recompute co/cx polarization
+        self.assign_polarization(self.polarization)
+        
+        # Clear cache
+        self.clear_cache()
+        
+        # Update metadata
+        if hasattr(self, 'metadata') and self.metadata is not None:
+            if 'operations' not in self.metadata:
+                self.metadata['operations'] = []
+            self.metadata['operations'].append({
+                'type': 'normalize_amplitude',
+                'reference': reference_value
+            })
+
     def normalize_phase(self, reference_theta=0, reference_phi=0) -> None:
         """
         Normalize the phase of an antenna pattern based on its polarization type.
@@ -954,7 +1007,7 @@ class FarFieldOperationsMixin:
                   theta_range: Optional[Tuple[float, float]] = None,
                   theta_step: Optional[float] = None, 
                   phi_range: Optional[Tuple[float, float]] = None,
-                  phi_step: Optional[float] = None) -> 'AntennaPattern':
+                  phi_step: Optional[float] = None) -> 'FarFieldSpherical':
         """
         Create a subsampled version of the pattern by selecting nearest available points.
         

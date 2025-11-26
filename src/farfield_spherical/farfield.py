@@ -15,7 +15,7 @@ from .analysis import (
     calculate_phase_center, get_axial_ratio
     )
 from .farfield_operations import FarFieldOperationsMixin
-from swe import SphericalWaveExpansion
+from swe import SphericalWaveExpansion # pyright: ignore[reportMissingImports]
 
 class FarFieldSpherical(FarFieldOperationsMixin):
     """
@@ -447,21 +447,45 @@ class FarFieldSpherical(FarFieldOperationsMixin):
     def save_pattern_npz(self, file_path: Union[str, Path], metadata: Optional[Dict[str, Any]] = None) -> None:
         """
         Save a far-field pattern to NPZ format for efficient loading.
-        
+
         Args:
             file_path: Path to save the file to
             metadata: Optional metadata to include
-            
+
         Raises:
             OSError: If file cannot be written
         """
         from .io.npz_format import save_pattern_npz
         save_pattern_npz(self, file_path, metadata)
 
+    def write_csv(self, file_path: Union[str, Path],
+                  components: str = 'copol',
+                  include_complex: bool = False) -> None:
+        """
+        Write the far-field pattern to CSV format.
+
+        Args:
+            file_path: Path to save the file to
+            components: Which components to include:
+                'copol' = co-pol and cross-pol gain/phase (default)
+                'spherical' = e_theta and e_phi gain/phase
+                'all' = all components (co-pol, cross-pol, e_theta, e_phi)
+            include_complex: If True, also include real/imaginary parts
+
+        Raises:
+            OSError: If file cannot be written
+            ValueError: If components is invalid
+
+        Example:
+            >>> pattern.write_csv('output.csv')
+            >>> pattern.write_csv('output.csv', components='all', include_complex=True)
+        """
+        from .io.writers import write_csv
+        write_csv(self, file_path, components, include_complex)
+
     def calculate_spherical_modes(self, radius: Optional[float] = None, 
                                 frequency: Optional[float] = None) -> 'SphericalWaveExpansion':
         """Calculate spherical wave expansion from the far-field pattern."""
-        from swe import SphericalWaveExpansion
         
         if frequency is None:
             frequency = self.frequencies[0]
