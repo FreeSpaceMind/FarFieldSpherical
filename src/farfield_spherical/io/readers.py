@@ -341,16 +341,205 @@ def read_ffd(file_path: Union[str, Path]):
 def read_ticra_sph(file_path: Union[str, Path]) -> 'SphericalWaveExpansion':
     """
     Read spherical mode coefficients from TICRA .sph format.
-    
+
     Args:
         file_path: Path to .sph file
         frequency: Frequency in Hz (for metadata, not read from file)
-        
+
     Returns:
         SphericalWaveExpansion object
     """
-    
+
     # Use the new module's reader
     swe = SphericalWaveExpansion.from_sph_file(str(file_path))
-    
+
     return swe
+
+
+def read_atams(file_path: Union[str, Path], interpolate: bool = False,
+               theta: Optional[np.ndarray] = None) -> FarFieldSpherical:
+    """
+    Read an ATAMS antenna measurement file.
+
+    The ATAMS format stores antenna test and measurement data with:
+    - Multiple frequencies per spatial position
+    - Per-phi theta grids (actual measured positions)
+    - Theta-pol and Phi-pol amplitude (dB) and phase (degrees)
+
+    File structure:
+    - Row 1: "Frequency" followed by frequency values in GHz
+    - Row 2: Fixed axis name and value (e.g., "Elevation  0.00")
+    - Row 3: "Head" followed by head position values (phi angles in degrees)
+    - Row 4: "Azimuth" followed by nominal azimuth values (stored in metadata)
+    - Row 5+: Data blocks (5 rows each)
+
+    Each data block contains:
+    - Location: az_actual, el_actual, head_actual (actual measurement position)
+    - Theta-pol (mag): Amplitude values in dB for each frequency
+    - Theta-pol (phase): Phase values in degrees for each frequency
+    - Phi-pol (mag): Amplitude values in dB for each frequency
+    - Phi-pol (phase): Phase values in degrees for each frequency
+
+    Args:
+        file_path: Path to the .atams file
+        interpolate: If True, interpolate onto a uniform theta grid before returning.
+                     Uses the nominal header azimuth values as the target grid unless
+                     theta is specified.
+        theta: Optional explicit uniform theta array for interpolation.
+               Implies interpolate=True.
+
+    Returns:
+        FarFieldSpherical: Per-phi theta grid if interpolate=False,
+                           uniform theta grid if interpolate=True.
+
+    Raises:
+        FileNotFoundError: If file does not exist
+        ValueError: If file format is invalid
+    """
+    file_path = Path(file_path)
+    if not file_path.exists():
+        raise FileNotFoundError(f"ATAMS file not found: {file_path}")
+
+    # Read all lines
+    with open(file_path, 'r') as f:
+        lines = f.readlines()
+
+    if len(lines) < 5:
+        raise ValueError("ATAMS file too short - expected at least 5 header lines")
+
+    # Parse header
+    # Row 1: Frequency values (GHz)
+    freq_parts = lines[0].strip().split('\t')
+    if freq_parts[0] != 'Frequency':
+        raise ValueError(f"Expected 'Frequency' in first row, got '{freq_parts[0]}'")
+    frequencies_ghz = [float(x) for x in freq_parts[1:] if x.strip()]
+    frequencies_hz = np.array(frequencies_ghz) * 1e9
+    n_freq = len(frequencies_hz)
+
+    # Row 2: Fixed axis (e.g., "Elevation  0.00")
+    fixed_parts = lines[1].strip().split('\t')
+    fixed_axis_name = fixed_parts[0]
+    fixed_axis_value = float(fixed_parts[1]) if len(fixed_parts) > 1 and fixed_parts[1].strip() else 0.0
+
+    # Row 3: Head positions (phi angles)
+    head_parts = lines[2].strip().split('\t')
+    if head_parts[0] != 'Head':
+        raise ValueError(f"Expected 'Head' in third row, got '{head_parts[0]}'")
+    phi_array = np.array([float(x) for x in head_parts[1:] if x.strip()])
+    n_phi = len(phi_array)
+
+    # Row 4: Nominal azimuth values (theta reference)
+    az_parts = lines[3].strip().split('\t')
+    if az_parts[0] != 'Azimuth':
+        raise ValueError(f"Expected 'Azimuth' in fourth row, got '{az_parts[0]}'")
+    nominal_theta = np.array([float(x) for x in az_parts[1:] if x.strip()])
+
+    # Parse data blocks starting from row 5
+    # Each block is 5 lines:
+    # 1. Location: az_actual, el_actual, head_actual
+    # 2. Theta-pol (mag): values for each frequency
+    # 3. Theta-pol (phase): values for each frequency
+    # 4. Phi-pol (mag): values for each frequency
+    # 5. Phi-pol (phase): values for each frequency
+
+    # First pass: count blocks and organize by head value
+    data_start = 4
+    blocks_by_head = {phi: [] for phi in phi_array}
+
+    line_idx = data_start
+    while line_idx + 4 < len(lines):
+        # Parse Location line
+        loc_parts = lines[line_idx].strip().split('\t')
+        if loc_parts[0] != 'Location':
+            line_idx += 1
+            continue
+
+        az_actual = float(loc_parts[1])
+        el_actual = float(loc_parts[2]) if len(loc_parts) > 2 else 0.0
+        head_actual = float(loc_parts[3]) if len(loc_parts) > 3 else 0.0
+
+        # Parse field data
+        theta_mag_parts = lines[line_idx + 1].strip().split('\t')
+        theta_phase_parts = lines[line_idx + 2].strip().split('\t')
+        phi_mag_parts = lines[line_idx + 3].strip().split('\t')
+        phi_phase_parts = lines[line_idx + 4].strip().split('\t')
+
+        # Extract values (skip first element which is the label)
+        theta_mag_db = np.array([float(x) for x in theta_mag_parts[1:n_freq+1]])
+        theta_phase_deg = np.array([float(x) for x in theta_phase_parts[1:n_freq+1]])
+        phi_mag_db = np.array([float(x) for x in phi_mag_parts[1:n_freq+1]])
+        phi_phase_deg = np.array([float(x) for x in phi_phase_parts[1:n_freq+1]])
+
+        # Find matching head in phi_array (with tolerance)
+        head_idx = np.argmin(np.abs(phi_array - head_actual))
+
+        blocks_by_head[phi_array[head_idx]].append({
+            'az_actual': az_actual,
+            'theta_mag_db': theta_mag_db,
+            'theta_phase_deg': theta_phase_deg,
+            'phi_mag_db': phi_mag_db,
+            'phi_phase_deg': phi_phase_deg
+        })
+
+        line_idx += 5
+
+    # Determine n_theta (should be same for all heads)
+    n_theta_per_head = [len(blocks_by_head[phi]) for phi in phi_array]
+    if len(set(n_theta_per_head)) != 1:
+        raise ValueError(f"Different number of theta points per head: {n_theta_per_head}")
+    n_theta = n_theta_per_head[0]
+
+    # Build 2D theta grid and field arrays
+    theta_grid = np.zeros((n_theta, n_phi))
+    e_theta = np.zeros((n_freq, n_theta, n_phi), dtype=np.complex64)
+    e_phi = np.zeros((n_freq, n_theta, n_phi), dtype=np.complex64)
+
+    for phi_idx, phi_val in enumerate(phi_array):
+        blocks = blocks_by_head[phi_val]
+        # Sort by azimuth to ensure consistent ordering
+        blocks.sort(key=lambda b: b['az_actual'])
+
+        for theta_idx, block in enumerate(blocks):
+            theta_grid[theta_idx, phi_idx] = block['az_actual']
+
+            # Convert dB + phase to complex linear
+            # E = 10^(mag_db/20) * exp(-j * phase_deg * pi/180)
+            # Conjugate phase to match expected convention
+            e_theta_linear = 10 ** (block['theta_mag_db'] / 20) * np.exp(
+                -1j * np.deg2rad(block['theta_phase_deg'])
+            )
+            e_phi_linear = 10 ** (block['phi_mag_db'] / 20) * np.exp(
+                -1j * np.deg2rad(block['phi_phase_deg'])
+            )
+
+            e_theta[:, theta_idx, phi_idx] = e_theta_linear
+            e_phi[:, theta_idx, phi_idx] = e_phi_linear
+
+    # Create metadata
+    metadata = {
+        'source_format': 'atams',
+        'source_file': str(file_path),
+        'fixed_axis': {'name': fixed_axis_name, 'value': fixed_axis_value},
+        'nominal_theta': nominal_theta.tolist(),
+        'operations': []
+    }
+
+    # Create FarFieldSpherical with 2D theta grid (non-uniform mode)
+    pattern = FarFieldSpherical(
+        theta=theta_grid,
+        phi=phi_array,
+        frequency=frequencies_hz,
+        e_theta=e_theta,
+        e_phi=e_phi,
+        metadata=metadata
+    )
+
+    # Apply optional interpolation
+    if theta is not None:
+        interpolate = True
+
+    if interpolate:
+        target = theta if theta is not None else nominal_theta
+        pattern = pattern.to_uniform_theta(target)
+
+    return pattern

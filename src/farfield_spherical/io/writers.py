@@ -1,36 +1,62 @@
 from typing import Union
 from pathlib import Path
+import warnings
 
 from ..farfield import FarFieldSpherical
-from pathlib import Path
 from swe import SphericalWaveExpansion # pyright: ignore[reportMissingImports]
 import numpy as np
+
+
+def _ensure_uniform_theta(pattern, format_name: str):
+    """
+    Ensure pattern has uniform theta grid, interpolating if necessary.
+
+    Args:
+        pattern: FarFieldSpherical object
+        format_name: Name of the output format for warning message
+
+    Returns:
+        FarFieldSpherical with uniform theta grid (original or interpolated)
+    """
+    if pattern.has_uniform_theta:
+        return pattern
+
+    warnings.warn(
+        f"Pattern has non-uniform theta grids. Automatically interpolating to "
+        f"a uniform grid for {format_name} export. Use .to_uniform_theta() "
+        f"explicitly for more control over the output grid.",
+        UserWarning
+    )
+    return pattern.to_uniform_theta()
 
 def write_cut(pattern, file_path: Union[str, Path], polarization_format: int = 1) -> None:
     """
     Write an antenna pattern to GRASP CUT format.
-    
+
     Args:
-        pattern: AntennaPattern object to save
+        pattern: FarFieldSpherical object to save
         file_path: Path to save the file to
         polarization_format: Output polarization format:
             1 = theta/phi (spherical)
             2 = RHCP/LHCP (circular)
             3 = X/Y (Ludwig-3 linear)
-            
+
     Raises:
         OSError: If file cannot be written
         ValueError: If polarization_format is invalid
     """
+    # Ensure uniform theta grid (auto-interpolate if needed)
+    pattern = _ensure_uniform_theta(pattern, 'CUT')
+
     file_path = Path(file_path)
-    
+
     # Ensure .cut extension
     if file_path.suffix.lower() != '.cut':
         file_path = file_path.with_suffix('.cut')
-    
+
     if polarization_format not in [1, 2, 3]:
         raise ValueError("polarization_format must be 1 (theta/phi), 2 (RHCP/LHCP), or 3 (X/Y)")
-    
+
     # Get pattern data
     theta = pattern.theta_angles
     phi = pattern.phi_angles
@@ -90,20 +116,23 @@ def write_cut(pattern, file_path: Union[str, Path], polarization_format: int = 1
 def write_ffd(pattern, file_path: Union[str, Path]) -> None:
     """
     Write an antenna pattern to HFSS far field data format (.ffd).
-    
+
     Args:
-        pattern: AntennaPattern object to save
+        pattern: FarFieldSpherical object to save
         file_path: Path to save the file to
-        
+
     Raises:
         OSError: If file cannot be written
     """
+    # Ensure uniform theta grid (auto-interpolate if needed)
+    pattern = _ensure_uniform_theta(pattern, 'FFD')
+
     file_path = Path(file_path)
-    
+
     # Ensure .ffd extension
     if file_path.suffix.lower() != '.ffd':
         file_path = file_path.with_suffix('.ffd')
-    
+
     # Get pattern data
     theta = pattern.theta_angles
     phi = pattern.phi_angles
@@ -169,6 +198,9 @@ def write_csv(pattern, file_path: Union[str, Path],
         >>> pattern.write_csv('output.csv')
         >>> pattern.write_csv('output.csv', components='all', include_complex=True)
     """
+    # Ensure uniform theta grid (auto-interpolate if needed)
+    pattern = _ensure_uniform_theta(pattern, 'CSV')
+
     file_path = Path(file_path)
 
     # Ensure .csv extension

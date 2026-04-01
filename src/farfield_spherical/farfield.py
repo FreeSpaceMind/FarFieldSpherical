@@ -45,26 +45,28 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         'phi'                         # Spherical phi
     }
     
-    def __init__(self, 
-                 theta: np.ndarray, 
-                 phi: np.ndarray, 
+    def __init__(self,
+                 theta: np.ndarray,
+                 phi: np.ndarray,
                  frequency: np.ndarray,
-                 e_theta: np.ndarray, 
+                 e_theta: np.ndarray,
                  e_phi: np.ndarray,
                  polarization: Optional[str] = None,
                  metadata: Optional[Dict[str, Any]] = None):
         """
         Initialize a FarFieldSpherical with the given parameters.
-        
+
         Args:
-            theta: Array of theta angles in degrees
+            theta: Array of theta angles in degrees. Can be:
+                - 1D array (n_theta,): Uniform grid shared by all phi cuts
+                - 2D array (n_theta, n_phi): Per-phi theta grid (non-uniform)
             phi: Array of phi angles in degrees
             frequency: Array of frequencies in Hz
             e_theta: Complex array of e_theta values [freq, theta, phi]
             e_phi: Complex array of e_phi values [freq, theta, phi]
             polarization: Optional polarization type. If None, determined automatically.
             metadata: Optional metadata dictionary
-            
+
         Raises:
             ValueError: If arrays have incompatible dimensions
             ValueError: If polarization is invalid
@@ -72,33 +74,63 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         # Convert arrays to efficient dtypes for faster processing
         e_theta = np.asarray(e_theta, dtype=np.complex64)
         e_phi = np.asarray(e_phi, dtype=np.complex64)
+        theta = np.asarray(theta, dtype=np.float64)
+        phi = np.asarray(phi, dtype=np.float64)
+        frequency = np.asarray(frequency, dtype=np.float64)
+
+        # Handle 2D theta (per-phi theta grids)
+        if theta.ndim == 2:
+            # Non-uniform theta: shape is (n_theta, n_phi)
+            n_theta, n_phi_from_theta = theta.shape
+            if n_phi_from_theta != len(phi):
+                raise ValueError(
+                    f"2D theta array n_phi dimension ({n_phi_from_theta}) must match "
+                    f"phi array length ({len(phi)})"
+                )
+            # Store the full 2D theta grid
+            self._theta_grid = theta.copy()
+            # Use integer indices as the theta coordinate dimension
+            theta_coord = np.arange(n_theta)
+        elif theta.ndim == 1:
+            # Uniform theta: standard behavior
+            self._theta_grid = None
+            theta_coord = theta
+            n_theta = len(theta)
+        else:
+            raise ValueError(f"theta must be 1D or 2D array, got {theta.ndim}D")
 
         # Validate array dimensions
-        expected_shape = (len(frequency), len(theta), len(phi))
+        expected_shape = (len(frequency), n_theta, len(phi))
         if e_theta.shape != expected_shape:
             raise ValueError(f"e_theta shape mismatch: expected {expected_shape}, got {e_theta.shape}")
         if e_phi.shape != expected_shape:
             raise ValueError(f"e_phi shape mismatch: expected {expected_shape}, got {e_phi.shape}")
-        
+
         # Create core dataset
+        data_vars = {
+            'e_theta': (('frequency', 'theta', 'phi'), e_theta),
+            'e_phi': (('frequency', 'theta', 'phi'), e_phi),
+        }
+
+        # For non-uniform theta, also store the 2D theta grid as a data variable
+        if self._theta_grid is not None:
+            data_vars['theta_grid'] = (('theta', 'phi'), self._theta_grid)
+
         self.data = xr.Dataset(
-            data_vars={
-                'e_theta': (('frequency', 'theta', 'phi'), e_theta),
-                'e_phi': (('frequency', 'theta', 'phi'), e_phi),
-            },
+            data_vars=data_vars,
             coords={
-                'theta': theta,
+                'theta': theta_coord,
                 'phi': phi,
                 'frequency': frequency,
             }
         )
-        
+
         # Initialize metadata if provided
         self.metadata = metadata.copy() if metadata is not None else {'operations': []}
 
         # Assign polarization and compute derived components
         self.assign_polarization(polarization)
-        
+
         # Initialize cache
         self._cache: Dict[str, Any] = {}
     
@@ -108,8 +140,60 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         return self.data.frequency.values
     
     @property
+    def has_uniform_theta(self) -> bool:
+        """True if all phi cuts share the same theta grid."""
+        return self._theta_grid is None
+
+    @property
+    def theta_grid(self) -> np.ndarray:
+        """
+        Get theta values as 2D array (n_theta, n_phi).
+
+        Works for both uniform and non-uniform patterns.
+        For uniform patterns, broadcasts the 1D array across phi.
+
+        Returns:
+            np.ndarray: 2D array of theta values with shape (n_theta, n_phi)
+        """
+        if self._theta_grid is not None:
+            return self._theta_grid
+        # Broadcast 1D to 2D for uniform case
+        return np.tile(self.data.theta.values[:, np.newaxis], (1, len(self.phi_angles)))
+
+    def get_theta_for_phi(self, phi_idx: int) -> np.ndarray:
+        """
+        Get the 1D theta array for a specific phi cut index.
+
+        Args:
+            phi_idx: Index of the phi cut
+
+        Returns:
+            np.ndarray: 1D array of theta values for the specified phi cut
+        """
+        if self._theta_grid is not None:
+            return self._theta_grid[:, phi_idx]
+        return self.data.theta.values
+
+    @property
     def theta_angles(self) -> np.ndarray:
-        """Get theta angles in degrees."""
+        """
+        Get theta angles in degrees.
+
+        For uniform grids, returns the shared 1D theta array.
+        For non-uniform grids, raises ValueError directing to theta_grid or get_theta_for_phi().
+
+        Returns:
+            np.ndarray: 1D array of theta values (uniform grids only)
+
+        Raises:
+            ValueError: If pattern has non-uniform theta grids
+        """
+        if self._theta_grid is not None:
+            raise ValueError(
+                "Pattern has non-uniform theta grids (per-phi). "
+                "Use .theta_grid for 2D array or .get_theta_for_phi(phi_idx) for a specific cut. "
+                "Use .to_uniform_theta() to interpolate to a common grid."
+            )
         return self.data.theta.values
     
     @property
@@ -133,13 +217,13 @@ class FarFieldSpherical(FarFieldOperationsMixin):
     def at_frequency(self, frequency: float) -> 'Generator[FarFieldSpherical, None, None]':
         """
         Context manager to temporarily extract a single-frequency pattern.
-        
+
         Args:
             frequency: Frequency in Hz
-            
+
         Yields:
             FarFieldSpherical: Single-frequency pattern
-            
+
         Example:
             ```python
             with pattern.at_frequency(2.4e9) as single_freq_pattern:
@@ -147,13 +231,19 @@ class FarFieldSpherical(FarFieldOperationsMixin):
             ```
         """
         freq_value, freq_idx = find_nearest(self.frequencies, frequency)
-        
+
         # Extract data for the nearest frequency
         single_freq_data = self.data.isel(frequency=freq_idx)
-        
+
+        # Use theta_grid for non-uniform, theta_angles for uniform
+        if self._theta_grid is not None:
+            theta_param = self._theta_grid
+        else:
+            theta_param = self.data.theta.values
+
         # Create a new pattern with the extracted data
         single_freq_pattern = FarFieldSpherical(
-            theta=self.theta_angles,
+            theta=theta_param,
             phi=self.phi_angles,
             frequency=np.array([freq_value]),
             e_theta=np.expand_dims(single_freq_data.e_theta.values, axis=0),
@@ -161,25 +251,132 @@ class FarFieldSpherical(FarFieldOperationsMixin):
             polarization=self.polarization,
             metadata={'parent_pattern': 'Single frequency view'}
         )
-        
+
         yield single_freq_pattern
-    
+
+    def to_uniform_theta(self, theta: Optional[np.ndarray] = None) -> 'FarFieldSpherical':
+        """
+        Return a new FarFieldSpherical interpolated onto a uniform theta grid.
+
+        Args:
+            theta: Target uniform theta array. If None, uses a linear grid spanning
+                   the common range across all phi cuts with the median spacing.
+
+        Returns:
+            New FarFieldSpherical with uniform theta grid.
+
+        Notes:
+            If the pattern already has a uniform theta grid, returns a copy.
+            Uses scipy.interpolate.interp1d (linear) per-phi, per-frequency.
+        """
+        from scipy.interpolate import interp1d
+
+        # If already uniform, return a copy
+        if self.has_uniform_theta:
+            return self.copy()
+
+        # Compute default target theta if not specified
+        if theta is None:
+            # Find common overlap region across all phi cuts
+            theta_mins = []
+            theta_maxs = []
+            theta_steps = []
+
+            for phi_idx in range(len(self.phi_angles)):
+                phi_theta = self.get_theta_for_phi(phi_idx)
+                theta_mins.append(np.min(phi_theta))
+                theta_maxs.append(np.max(phi_theta))
+                if len(phi_theta) > 1:
+                    # Compute median step for this cut
+                    steps = np.diff(phi_theta)
+                    theta_steps.append(np.median(steps))
+
+            # Common range is max of mins to min of maxs
+            theta_min = np.max(theta_mins)
+            theta_max = np.min(theta_maxs)
+
+            # Use median step across all cuts
+            step = np.median(theta_steps) if theta_steps else 1.0
+
+            # Generate uniform theta array
+            theta = np.arange(theta_min, theta_max + step / 2, step)
+
+        # Interpolate fields to the new uniform theta grid
+        n_freq = len(self.frequencies)
+        n_theta_new = len(theta)
+        n_phi = len(self.phi_angles)
+
+        e_theta_new = np.zeros((n_freq, n_theta_new, n_phi), dtype=np.complex64)
+        e_phi_new = np.zeros((n_freq, n_theta_new, n_phi), dtype=np.complex64)
+
+        for freq_idx in range(n_freq):
+            for phi_idx in range(n_phi):
+                # Get per-phi theta array
+                phi_theta = self.get_theta_for_phi(phi_idx)
+
+                # Get field values for this freq/phi
+                e_theta_vals = self.data.e_theta.values[freq_idx, :, phi_idx]
+                e_phi_vals = self.data.e_phi.values[freq_idx, :, phi_idx]
+
+                # Interpolate real and imaginary parts separately for stability
+                # E_theta interpolation
+                interp_real = interp1d(phi_theta, e_theta_vals.real, kind='linear',
+                                       bounds_error=False, fill_value='extrapolate')
+                interp_imag = interp1d(phi_theta, e_theta_vals.imag, kind='linear',
+                                       bounds_error=False, fill_value='extrapolate')
+                e_theta_new[freq_idx, :, phi_idx] = interp_real(theta) + 1j * interp_imag(theta)
+
+                # E_phi interpolation
+                interp_real = interp1d(phi_theta, e_phi_vals.real, kind='linear',
+                                       bounds_error=False, fill_value='extrapolate')
+                interp_imag = interp1d(phi_theta, e_phi_vals.imag, kind='linear',
+                                       bounds_error=False, fill_value='extrapolate')
+                e_phi_new[freq_idx, :, phi_idx] = interp_real(theta) + 1j * interp_imag(theta)
+
+        # Build metadata
+        new_metadata = self.metadata.copy() if self.metadata else {'operations': []}
+        if 'operations' not in new_metadata:
+            new_metadata['operations'] = []
+        new_metadata['operations'].append({
+            'type': 'to_uniform_theta',
+            'original_theta_grid_shape': list(self._theta_grid.shape) if self._theta_grid is not None else None,
+            'new_theta_range': [float(theta[0]), float(theta[-1])],
+            'new_theta_points': len(theta)
+        })
+
+        # Create new pattern with uniform theta
+        return FarFieldSpherical(
+            theta=theta,  # 1D array -> uniform mode
+            phi=self.phi_angles.copy(),
+            frequency=self.frequencies.copy(),
+            e_theta=e_theta_new,
+            e_phi=e_phi_new,
+            polarization=self.polarization,
+            metadata=new_metadata
+        )
+
     @classmethod
     def from_ticra_sph(cls, file_path: Union[str, Path], frequency: float,
                     theta_angles: Optional[np.ndarray] = None,
                     phi_angles: Optional[np.ndarray] = None) -> 'FarFieldSpherical':
         """
         Create FarFieldSpherical from TICRA .sph file.
-        
+
+        Note:
+            When exporting .sph files from TICRA/GRASP, enable power normalization
+            in the export settings so that the coefficients are normalized to unit
+            radiated power. Unnormalized exports will produce a correct far-field
+            pattern shape but incorrect absolute near-field levels in PO analysis.
+
         Args:
             file_path: Path to .sph file
             frequency: Frequency in Hz
             theta_angles: Theta angles for reconstruction (default: -180 to 180, 1°)
             phi_angles: Phi angles for reconstruction (default: 0 to 360, 5°)
-            
+
         Returns:
             FarFieldSpherical object with SWE coefficients attached
-            
+
         Example:
         ```python
                 pattern = FarFieldSpherical.from_ticra_sph('antenna.sph', frequency=9.2e9)
@@ -199,12 +396,18 @@ class FarFieldSpherical(FarFieldOperationsMixin):
     def copy(self) -> 'FarFieldSpherical':
         """
         Create a deep copy of the far-field pattern.
-        
+
         Returns:
             FarFieldSpherical: A new FarFieldSpherical instance with copied data
         """
+        # Use theta_grid for non-uniform, theta coordinates for uniform
+        if self._theta_grid is not None:
+            theta_param = self._theta_grid.copy()
+        else:
+            theta_param = self.data.theta.values.copy()
+
         return FarFieldSpherical(
-            theta=self.theta_angles.copy(),
+            theta=theta_param,
             phi=self.phi_angles.copy(),
             frequency=self.frequencies.copy(),
             e_theta=self.data.e_theta.values.copy(),
@@ -483,17 +686,31 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         from .io.writers import write_csv
         write_csv(self, file_path, components, include_complex)
 
-    def calculate_spherical_modes(self, radius: Optional[float] = None, 
-                                frequency: Optional[float] = None) -> 'SphericalWaveExpansion':
-        """Calculate spherical wave expansion from the far-field pattern."""
-        
+    def calculate_spherical_modes(self, radius: Optional[float] = None,
+                                frequency: Optional[float] = None,
+                                nmax: Optional[int] = None,
+                                mmax: Optional[int] = None) -> 'SphericalWaveExpansion':
+        """Calculate spherical wave expansion from the far-field pattern.
+
+        Parameters
+        ----------
+        radius : float, optional
+            Not currently used, reserved for future near-field input.
+        frequency : float, optional
+            Frequency in Hz. Defaults to first frequency.
+        nmax : int, optional
+            Maximum polar mode index. If None, determined automatically.
+        mmax : int, optional
+            Maximum azimuthal mode index. If None, determined automatically.
+        """
+
         if frequency is None:
             frequency = self.frequencies[0]
-        
+
         # Use context manager to get single frequency
         with self.at_frequency(frequency) as single_freq_pattern:
             single_freq_pattern.transform_coordinates('sided')
-            
+
             # Extract angle arrays and field data
             theta_deg = single_freq_pattern.theta_angles
             phi_deg = single_freq_pattern.phi_angles
@@ -509,7 +726,6 @@ class FarFieldSpherical(FarFieldOperationsMixin):
             E_theta = E_theta_2d.ravel()
             E_phi = E_phi_2d.ravel()
 
-            
             swe_obj = SphericalWaveExpansion.from_far_field(
                 theta=theta,
                 phi=phi,
@@ -517,7 +733,22 @@ class FarFieldSpherical(FarFieldOperationsMixin):
                 E_phi=E_phi,
                 frequency=frequency,
             )
-        
+
+        # Post-process: truncate to user-specified NMAX/MMAX
+        if nmax is not None or mmax is not None:
+            n_limit = nmax if nmax is not None else swe_obj.NMAX
+            m_limit = mmax if mmax is not None else swe_obj.MMAX
+            swe_obj.Q1_coeffs = {
+                (n, m): v for (n, m), v in swe_obj.Q1_coeffs.items()
+                if n <= n_limit and abs(m) <= m_limit
+            }
+            swe_obj.Q2_coeffs = {
+                (n, m): v for (n, m), v in swe_obj.Q2_coeffs.items()
+                if n <= n_limit and abs(m) <= m_limit
+            }
+            swe_obj.NMAX = n_limit
+            swe_obj.MMAX = m_limit
+
         return swe_obj
     
     def find_beamwidth_at_db_level(self, db_level: float, 

@@ -18,7 +18,20 @@ if TYPE_CHECKING:
 
 class FarFieldOperationsMixin:
     """Mixin class providing operations for far-field patterns."""
-    
+
+    def _require_uniform_theta(self, operation_name: str) -> None:
+        """
+        Raise NotImplementedError if the pattern has non-uniform theta grids.
+
+        Args:
+            operation_name: Name of the operation for the error message
+        """
+        if not self.has_uniform_theta:
+            raise NotImplementedError(
+                f"{operation_name} does not yet support non-uniform theta grids. "
+                "Use .to_uniform_theta() first to interpolate to a common grid."
+            )
+
     def change_polarization(self, new_polarization: str) -> None:
         """
         Change the polarization of the far-field pattern.
@@ -48,19 +61,21 @@ class FarFieldOperationsMixin:
     def translate(self, translation: np.ndarray) -> None:
         """
         Shifts the antenna phase pattern to place the origin at the location defined by the shift.
-        
+
         This applies a linear phase shift to the pattern corresponding to a translation
         of the phase center. The phase shift is frequency-dependent.
-        
+
         Args:
             translation: 3D translation vector [x, y, z] in meters
-            
+
         Note:
             This modifies the pattern in-place.
             Use normalize_phase() separately if phase normalization is needed.
         """
+        self._require_uniform_theta('translate')
+
         from .pattern_operations import phase_pattern_translate
-        
+
         # Convert angles to radians for phase_pattern_translate
         theta_rad = np.radians(self.theta_angles)
         phi_rad = np.radians(self.phi_angles)
@@ -281,17 +296,19 @@ class FarFieldOperationsMixin:
     def rotate(self, alpha: float, beta: float, gamma: float) -> None:
         """
         Rotate the pattern using Euler angles (isometric rotation).
-        
+
         Args:
             alpha: First rotation angle in degrees (z-axis)
-            beta: Second rotation angle in degrees (y-axis)  
+            beta: Second rotation angle in degrees (y-axis)
             gamma: Third rotation angle in degrees (z-axis)
-            
+
         Note:
             This modifies the pattern in-place.
         """
+        self._require_uniform_theta('rotate')
+
         from .pattern_operations import isometric_rotation
-        
+
         # Apply rotation to each frequency
         for freq_idx in range(len(self.frequencies)):
             e_theta_rot, e_phi_rot = isometric_rotation(
@@ -386,20 +403,22 @@ class FarFieldOperationsMixin:
                 'type': 'mirror_pattern'
             })
 
-    def interpolate_frequency(self, new_frequencies: np.ndarray, 
+    def interpolate_frequency(self, new_frequencies: np.ndarray,
                             kind: str = 'linear') -> 'FarFieldSpherical':
         """
         Interpolate pattern to new frequency points.
-        
+
         Args:
             new_frequencies: Array of new frequencies in Hz
             kind: Interpolation type ('linear', 'cubic', etc.)
-            
+
         Returns:
             New FarFieldSpherical object at interpolated frequencies
         """
+        self._require_uniform_theta('interpolate_frequency')
+
         # Interpolate complex fields
-        e_theta_interp = np.zeros((len(new_frequencies), len(self.theta_angles), 
+        e_theta_interp = np.zeros((len(new_frequencies), len(self.theta_angles),
                                    len(self.phi_angles)), dtype=complex)
         e_phi_interp = np.zeros_like(e_theta_interp)
         
@@ -435,23 +454,26 @@ class FarFieldOperationsMixin:
             metadata={'source': 'interpolated', 'original_metadata': self.metadata}
         )
     
-    def transform_coordinates(self, format: str = 'sided') -> None:
+    def transform_coordinates(self, format: str = 'sided', _preserve_polarization: bool = False) -> None:
         """
         Transform pattern coordinates to conform to a specified theta/phi convention.
-        
+
         This function rearranges the existing pattern data to match one of two standard
         coordinate conventions without interpolation:
-        
+
         - 'sided': theta 0:180, phi 0:360 (spherical convention)
         - 'central': theta -180:180, phi 0:180 (more common for antenna patterns)
-        
+
         Args:
             format: Target coordinate format ('sided' or 'central')
-                
+            _preserve_polarization: Internal flag to skip polarization recalculation
+
         Raises:
             ValueError: If format is not 'sided' or 'central'
+            NotImplementedError: If pattern has non-uniform theta grids
         """
-        
+        self._require_uniform_theta('transform_coordinates')
+
         if format not in ['sided', 'central']:
             raise ValueError("Format must be 'sided' or 'central'")
         
@@ -477,13 +499,14 @@ class FarFieldOperationsMixin:
             e_theta = e_theta[:, :, sort_indices]
             e_phi = e_phi[:, :, sort_indices]
 
-        # Check current format
-        theta_min, theta_max = np.min(theta), np.max(theta)
-        phi_min, phi_max = np.min(phi), np.max(phi)
-        
-        is_sided = theta_min >= 0 and theta_max <= 180 and phi_min >= 0 and phi_max <= 360
-        is_central = theta_min >= -180 and theta_max <= 180 and phi_min >= 0 and phi_max <= 180
-        
+        # Check current format based on whether negative theta values exist
+        theta_min = np.min(theta)
+        theta_max = np.max(theta)
+        phi_min = np.min(phi)
+        phi_max = np.max(phi)
+        is_central = theta_min < -0.5
+        is_sided = not is_central
+
         # If already in the correct format, return
         if (format == 'sided' and is_sided) or (format == 'central' and is_central):
             return
@@ -491,16 +514,20 @@ class FarFieldOperationsMixin:
         # Apply transformation based on target format
         if format == 'sided':
             # Target: theta 0:180, phi 0:360
-            
-            # Ensure phi is within central range
-            if np.max(phi) >= 180:
-                raise ValueError("Input phi must be less than 180 when transforming to sided")
-            
+
+            # If phi extends well beyond 180, data already has sided-like phi range
+            # (allow phi ending at exactly 180, which is valid central format)
+            if np.max(phi) > 185:
+                return
+
             # Find theta = 0 index
             theta0_idx = np.argmin(np.abs(theta))
-            
+
             # Create new theta vector (positive values only)
-            new_theta = theta[theta0_idx:]
+            new_theta = theta[theta0_idx:].copy()
+            # Ensure first value is exactly 0 if it's close (for round-trip conversion)
+            if np.abs(new_theta[0]) < 1e-6:
+                new_theta[0] = 0.0
             
             # Create new phi vector
             new_phi = np.concatenate((phi, phi+180))
@@ -516,33 +543,41 @@ class FarFieldOperationsMixin:
             
             # Second half of phi range - copy from negative theta (flipped)
             if theta0_idx > 0:  # Only if we have negative theta values
-                # Get the flipped negative theta section
+                # At theta_sided=0 (boresight), use the same data as the first half
+                # This ensures continuity at boresight where all phi cuts should match
+                new_e_theta[:, 0, len(phi):] = e_theta[:, theta0_idx, :]
+                new_e_phi[:, 0, len(phi):] = e_phi[:, theta0_idx, :]
+
+                # For theta_sided > 0, use flipped negative theta data with sign flip
+                # Central theta=-5 maps to sided theta=5 in the second phi half
                 flipped_e_theta = -np.flip(e_theta[:, :theta0_idx, :], axis=1)
                 flipped_e_phi = -np.flip(e_phi[:, :theta0_idx, :], axis=1)
-                
-                # Calculate how many values to copy (minimum of available and needed)
-                n_values = min(flipped_e_theta.shape[1], new_e_theta.shape[1])
-                
-                # Assign only as many values as will fit
-                new_e_theta[:, :n_values, len(phi):] = flipped_e_theta[:, :n_values, :]
-                new_e_phi[:, :n_values, len(phi):] = flipped_e_phi[:, :n_values, :]
-                
+
+                # Calculate how many values to copy (we're filling indices 1 onwards)
+                n_values = min(flipped_e_theta.shape[1], new_e_theta.shape[1] - 1)
+
+                # Assign flipped data to theta indices 1 and beyond
+                if n_values > 0:
+                    new_e_theta[:, 1:1+n_values, len(phi):] = flipped_e_theta[:, :n_values, :]
+                    new_e_phi[:, 1:1+n_values, len(phi):] = flipped_e_phi[:, :n_values, :]
+
                 # If we didn't fill all values, fill the rest with the last value
-                if n_values < new_e_theta.shape[1]:
+                filled_up_to = 1 + n_values
+                if filled_up_to < new_e_theta.shape[1]:
                     if n_values > 0:  # Make sure we have at least one value to repeat
-                        for i in range(n_values, new_e_theta.shape[1]):
+                        for i in range(filled_up_to, new_e_theta.shape[1]):
                             new_e_theta[:, i, len(phi):] = flipped_e_theta[:, n_values-1, :]
                             new_e_phi[:, i, len(phi):] = flipped_e_phi[:, n_values-1, :]
                     else:
                         # No negative values to use, fill with zeros
-                        new_e_theta[:, n_values:, len(phi):] = 0
-                        new_e_phi[:, n_values:, len(phi):] = 0
+                        new_e_theta[:, filled_up_to:, len(phi):] = 0
+                        new_e_phi[:, filled_up_to:, len(phi):] = 0
     
         elif format == 'central':
             # Target: theta -180:180, phi 0:180
-            
-            # Ensure theta starts at 0
-            if theta[0] != 0:
+
+            # Ensure theta starts at 0 (with tolerance for floating point)
+            if not np.isclose(theta[0], 0, atol=1e-6):
                 raise ValueError("Input theta must start at 0 when transforming to central")
             
             # Generate new theta array
@@ -599,10 +634,11 @@ class FarFieldOperationsMixin:
         
         # Replace the pattern's data with the new dataset
         self.data = new_data
-        
-        # Recalculate derived components e_co and e_cx
-        self.assign_polarization(self.polarization)
-        
+
+        # Recalculate derived components e_co and e_cx (unless preserving)
+        if not _preserve_polarization:
+            self.assign_polarization(self.polarization)
+
         # Clear cache
         self.clear_cache()
         
@@ -622,6 +658,10 @@ class FarFieldOperationsMixin:
     def normalize_at_boresight(self) -> None:
         """
         Normalize the pattern at boresight using Ludwig's III (e_x, e_y) components.
+
+        Each phi cut is scaled so that all cuts have the same amplitude and phase
+        at boresight (theta=0). The reference amplitude is the median magnitude
+        across all phi cuts, and the reference phase is from the first phi cut.
         """
         # Get underlying numpy arrays
         frequency = self.data.frequency.values
@@ -629,41 +669,47 @@ class FarFieldOperationsMixin:
         phi = self.data.phi.values
         e_theta = self.data.e_theta.values.copy()
         e_phi = self.data.e_phi.values.copy()
-        
+
         # Find boresight index
         theta0_idx = np.argmin(np.abs(theta))
-        
+
         # Process each frequency separately
         for f_idx in range(len(frequency)):
             # Convert all theta, phi points to x, y
             e_x, e_y = polarization_tp2xy(phi, e_theta[f_idx], e_phi[f_idx])
-            
+
             # Get boresight values for all phi cuts
             e_x_boresight = e_x[theta0_idx, :]
             e_y_boresight = e_y[theta0_idx, :]
-            
-            # Calculate average magnitude at boresight
-            e_x_avg_mag = np.mean(np.abs(e_x_boresight))
-            e_y_avg_mag = np.mean(np.abs(e_y_boresight))
-            
-            # Get reference phase from first phi cut
-            e_x_ref_phase = np.angle(e_x_boresight[0])
-            e_y_ref_phase = np.angle(e_y_boresight[0])
-            
+
+            # Calculate median magnitude at boresight
+            e_x_med_mag = np.median(np.abs(e_x_boresight))
+            e_y_med_mag = np.median(np.abs(e_y_boresight))
+
+            # Get reference phase from median phase across phi cuts
+            e_x_ref_phase = np.median(np.angle(e_x_boresight))
+            e_y_ref_phase = np.median(np.angle(e_y_boresight))
+
             # Normalize each phi cut
             for p_idx in range(len(phi)):
-                # Create reference values (same phase across all phi)
-                e_x_ref = e_x_avg_mag * np.exp(1j * e_x_ref_phase)
-                e_y_ref = e_y_avg_mag * np.exp(1j * e_y_ref_phase)
-                
-                # Calculate correction factors
-                e_x_correction = e_x_ref / e_x_boresight[p_idx]
-                e_y_correction = e_y_ref / e_y_boresight[p_idx]
-                
+                # Create reference values (median magnitude and phase)
+                e_x_ref = e_x_med_mag * np.exp(1j * e_x_ref_phase)
+                e_y_ref = e_y_med_mag * np.exp(1j * e_y_ref_phase)
+
+                # Calculate correction factors (avoid division by zero)
+                if np.abs(e_x_boresight[p_idx]) > 1e-30:
+                    e_x_correction = e_x_ref / e_x_boresight[p_idx]
+                else:
+                    e_x_correction = 1.0
+                if np.abs(e_y_boresight[p_idx]) > 1e-30:
+                    e_y_correction = e_y_ref / e_y_boresight[p_idx]
+                else:
+                    e_y_correction = 1.0
+
                 # Apply correction to all theta values for this phi
                 e_x[:, p_idx] *= e_x_correction
                 e_y[:, p_idx] *= e_y_correction
-            
+
             # Convert back to e_theta, e_phi
             e_theta_new, e_phi_new = polarization_xy2tp(phi, e_x, e_y)
             e_theta[f_idx] = e_theta_new
@@ -690,11 +736,12 @@ class FarFieldOperationsMixin:
     def apply_mars(self, maximum_radial_extent: float) -> None:
         """
         Apply Mathematical Absorber Reflection Suppression technique.
-        
+
         Args:
             maximum_radial_extent: Maximum radial extent of the antenna in meters
         """
-        
+        self._require_uniform_theta('apply_mars')
+
         if maximum_radial_extent <= 0:
             raise ValueError("Maximum radial extent must be positive")
         
@@ -816,25 +863,27 @@ class FarFieldOperationsMixin:
     def shift_theta_origin(self, theta_offset: float) -> None:
         """
         Shifts the origin of the theta coordinate axis for all phi cuts.
-        
-        This is useful for aligning measurement data when the mechanical 
-        antenna rotation axis doesn't align with the desired coordinate 
+
+        This is useful for aligning measurement data when the mechanical
+        antenna rotation axis doesn't align with the desired coordinate
         system (e.g., antenna boresight).
-        
-        The function preserves the original theta grid while shifting 
+
+        The function preserves the original theta grid while shifting
         the pattern data through interpolation along each phi cut.
-        
+
         Args:
             theta_offset: Angle in degrees to shift the theta origin.
                          Positive values move theta=0 to the right (positive theta),
                          negative values move theta=0 to the left (negative theta).
-                         
+
         Notes:
             - This performs interpolation along the theta axis for each phi cut
             - Complex field components are interpolated separately for amplitude and phase
               to avoid interpolation issues with complex numbers
             - Phase discontinuities are handled by unwrapping before interpolation
         """
+        self._require_uniform_theta('shift_theta_origin')
+
         # Get underlying numpy arrays
         frequency = self.data.frequency.values
         theta = self.data.theta.values
@@ -932,69 +981,42 @@ class FarFieldOperationsMixin:
 
     def shift_phi_origin(self, phi_offset: float) -> None:
         """
-        Shifts the origin of the phi coordinate axis for the pattern by adding the rotation
-        to all phi values while maintaining the original phi range and sorting order.
-        
+        Rotates the pattern in phi by adding an offset to phi coordinates.
+
+        The phi values are shifted by the offset, wrapped to 0-360, and the data
+        is reordered so phi starts at 0 (or the minimum value).
+
         Args:
-            phi_offset: Angle in degrees to shift the phi origin.
-                   Positive values rotate phi clockwise,
-                   negative values rotate phi counterclockwise.
+            phi_offset: Angle in degrees to add to phi coordinates.
         """
-        # Get theta array
-        theta = self.data.theta.values
-        
-        # Check if we have a central or sided pattern
-        is_central = np.any(theta < 0)
-        
-        # If central, first convert to sided
-        if is_central:
-            # Transform to sided coordinates in place
-            self.transform_coordinates('sided')
-            
-            # Update theta array
-            theta = self.data.theta.values
+        phi = self.data.phi.values.copy()
 
-        # Get underlying numpy arrays
-        phi = self.data.phi.values
-        e_theta = self.data.e_theta.values.copy()
-        e_phi = self.data.e_phi.values.copy()
-        
-        # Apply the phi offset to all phi values
-        new_phi = phi + phi_offset
-        
-        # For a proper coordinate system, phi should always be normalized to 0-360
-        # regardless of the original phi range
-        while np.any(new_phi < 0):
-            new_phi[new_phi < 0] += 360
-        while np.any(new_phi >= 360):
-            new_phi[new_phi >= 360] -= 360
-        
-        # Sort indices to maintain ascending order
-        sort_indices = np.argsort(new_phi)
-        
-        # Reorder phi and field components
-        sorted_phi = new_phi[sort_indices]
-        sorted_e_theta = e_theta[:, :, sort_indices]
-        sorted_e_phi = e_phi[:, :, sort_indices]
-        
-        # Update the pattern data
-        self.data = self.data.assign_coords({
-            'phi': sorted_phi
-        })
-        self.data['e_theta'].values = sorted_e_theta
-        self.data['e_phi'].values = sorted_e_phi
-        
-        # Recalculate derived components
-        self.assign_polarization(self.polarization)
+        if len(phi) < 2:
+            return
 
-        # If originally central, transform back
-        if is_central:
-            self.transform_coordinates('central')
-        
+        # Add offset and wrap to 0-360
+        new_phi = np.mod(phi + phi_offset, 360.0)
+
+        # Find sort indices to put phi back in ascending order
+        sort_idx = np.argsort(new_phi)
+        sorted_phi = new_phi[sort_idx]
+
+        # Reorder all field components along phi axis (axis=2)
+        self.data['e_theta'].values = self.data.e_theta.values[:, :, sort_idx]
+        self.data['e_phi'].values = self.data.e_phi.values[:, :, sort_idx]
+
+        if 'e_co' in self.data:
+            self.data['e_co'].values = self.data.e_co.values[:, :, sort_idx]
+        if 'e_cx' in self.data:
+            self.data['e_cx'].values = self.data.e_cx.values[:, :, sort_idx]
+
+        # Update phi coordinates
+        self.data = self.data.assign_coords({'phi': sorted_phi})
+
         # Clear cache
         self.clear_cache()
-        
-        # Update metadata if needed
+
+        # Update metadata
         if hasattr(self, 'metadata') and self.metadata is not None:
             if 'operations' not in self.metadata:
                 self.metadata['operations'] = []
@@ -1003,32 +1025,34 @@ class FarFieldOperationsMixin:
                 'phi_offset': float(phi_offset)
             })
 
-    def subsample(self, 
+    def subsample(self,
                   theta_range: Optional[Tuple[float, float]] = None,
-                  theta_step: Optional[float] = None, 
+                  theta_step: Optional[float] = None,
                   phi_range: Optional[Tuple[float, float]] = None,
                   phi_step: Optional[float] = None) -> 'FarFieldSpherical':
         """
         Create a subsampled version of the pattern by selecting nearest available points.
-        
+
         Args:
             theta_range: Optional (min, max) theta range in degrees. If None, use full range.
             theta_step: Optional theta step size in degrees. If None, use original spacing.
-            phi_range: Optional (min, max) phi range in degrees. If None, use full range.  
+            phi_range: Optional (min, max) phi range in degrees. If None, use full range.
             phi_step: Optional phi step size in degrees. If None, use original spacing.
-            
+
         Returns:
-            AntennaPattern: New pattern with reduced resolution
-            
+            FarFieldSpherical: New pattern with reduced resolution
+
         Example:
             # Reduce to theta -150:2:150, phi 0:15:360
             reduced = pattern.subsample(
-                theta_range=(-150, 150), 
+                theta_range=(-150, 150),
                 theta_step=2.0,
                 phi_range=(0, 360),
                 phi_step=15.0
             )
         """
+        self._require_uniform_theta('subsample')
+
         # Get original coordinates
         orig_theta = self.theta_angles
         orig_phi = self.phi_angles
@@ -1131,7 +1155,7 @@ class FarFieldOperationsMixin:
             }
         )
         
-        # Create new AntennaPattern instance using the same type as self
+        # Create new FarFieldSpherical instance using the same type as self
         new_pattern = type(self).__new__(type(self))
         new_pattern.data = new_data
         new_pattern.polarization = self.polarization

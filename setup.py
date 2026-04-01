@@ -20,12 +20,6 @@ setup(
     description="Core library for spherical far-field antenna pattern analysis",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/farfield-spherical",
-    project_urls={
-        "Bug Tracker": "https://github.com/yourusername/farfield-spherical/issues",
-        "Documentation": "https://farfield-spherical.readthedocs.io",
-        "Source Code": "https://github.com/yourusername/farfield-spherical",
-    },
     package_dir={"": "src"},
     packages=find_packages(where="src"),
     classifiers=[

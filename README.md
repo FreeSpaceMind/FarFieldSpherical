@@ -14,8 +14,9 @@ A Python library for working with antenna far-field patterns in spherical coordi
 - **Polarization Support**: Full support for linear (X/Y), circular (RHCP/LHCP), and spherical (theta/phi) polarizations with automatic conversions
 - **File I/O**: Read and write patterns in multiple formats:
   - GRASP .cut files
-  - NSI .ffd files  
+  - NSI .ffd files
   - TICRA .sph files (spherical wave expansion)
+  - ATAMS measurement files
   - NumPy .npz format (efficient native format)
 - **Pattern Operations**: 
   - Phase center translation
@@ -33,14 +34,8 @@ A Python library for working with antenna far-field patterns in spherical coordi
 
 ## Installation
 
-### From PyPI (when published)
-```bash
-pip install farfield-spherical
-```
-
 ### From source
 ```bash
-git clone https://github.com/yourusername/farfield-spherical.git
 cd farfield-spherical
 pip install -e .
 ```
@@ -268,27 +263,6 @@ Optional:
 ## License
 
 MIT License - see LICENSE file for details
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Support
-
-For bug reports and feature requests, please open an issue on GitHub.
-
-## Citation
-
-If you use this library in your research, please cite:
-
-```
-@software{farfield_spherical,
-  author = {Long, Justin},
-  title = {FarFieldSpherical: A Python library for antenna far-field pattern analysis},
-  year = {2024},
-  url = {https://github.com/yourusername/farfield-spherical}
-}
-```
 
 ## Changelog
 

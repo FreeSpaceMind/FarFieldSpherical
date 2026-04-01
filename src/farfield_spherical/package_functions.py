@@ -2,7 +2,7 @@
 Functions for working across multiple far-field spherical patterns.
 """
 import numpy as np
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Optional, Union, Dict, Any, Tuple
 
 from .farfield import FarFieldSpherical
 from .polarization import polarization_tp2xy, polarization_xy2tp, polarization_rl2tp
@@ -134,7 +134,7 @@ def difference_patterns(
     # Ensure both patterns have the same polarization
     pol = pattern1.polarization
     if pattern2.polarization != pol:
-        pattern2 = pattern2.change_polarization(pol)
+        pattern2.change_polarization(pol)
     
     # Get the field components - work directly with co-pol and cross-pol
     e_co1 = pattern1.data.e_co.values
@@ -224,3 +224,180 @@ def difference_patterns(
     )
     
     return result_pattern
+
+
+def detect_dual_sphere(pattern: FarFieldSpherical) -> Dict[str, Any]:
+    """
+    Detect whether a pattern contains dual sphere measurement data.
+
+    A dual sphere pattern has phi spanning 0-360, with the first half
+    (phi 0 to <180) representing one measurement sphere and the second half
+    (phi 180 to <360) representing a second sphere. Works regardless of
+    whether theta is in sided or central format.
+
+    Args:
+        pattern: FarFieldSpherical object to check
+
+    Returns:
+        dict with keys:
+            'is_dual_sphere': bool - True if pattern contains two spheres
+            'phi_split_index': int or None - index where phi >= 180 starts
+            'sphere1_phi_count': int - number of phi cuts in sphere 1
+            'sphere2_phi_count': int - number of phi cuts in sphere 2
+            'message': str - human-readable status message
+    """
+    result = {
+        'is_dual_sphere': False,
+        'phi_split_index': None,
+        'sphere1_phi_count': 0,
+        'sphere2_phi_count': 0,
+        'message': ''
+    }
+
+    if not pattern.has_uniform_theta:
+        result['message'] = 'Non-uniform theta grid'
+        return result
+
+    phi = pattern.phi_angles
+
+    # Check phi range: must span approximately 0-360
+    phi_min, phi_max = phi[0], phi[-1]
+    if phi_min > 5 or phi_max < 350:
+        result['message'] = f'Phi range {phi_min:.1f}-{phi_max:.1f} does not span 0-360'
+        return result
+
+    # Find split index where phi >= 180
+    split_idx = int(np.searchsorted(phi, 180.0, side='left'))
+
+    # Exclude phi=360 if present (duplicate of phi=0)
+    phi2_end = len(phi)
+    if np.isclose(phi[-1], 360.0, atol=0.1):
+        phi2_end -= 1
+
+    sphere1_count = split_idx
+    sphere2_count = phi2_end - split_idx
+
+    result['phi_split_index'] = split_idx
+    result['sphere1_phi_count'] = sphere1_count
+    result['sphere2_phi_count'] = sphere2_count
+
+    if sphere1_count == 0 or sphere2_count == 0:
+        result['message'] = 'No data on one side of phi=180'
+        return result
+
+    # Verify counts are close (allow +/- 1 for edge cases)
+    if abs(sphere1_count - sphere2_count) > 1:
+        result['message'] = (
+            f'Unequal phi halves: {sphere1_count} vs {sphere2_count}'
+        )
+        return result
+
+    # Verify phi grids align (sphere2 phi - 180 should match sphere1 phi)
+    phi1 = phi[:split_idx]
+    phi2 = phi[split_idx:phi2_end] - 180.0
+    n_compare = min(len(phi1), len(phi2))
+    if not np.allclose(phi1[:n_compare], phi2[:n_compare], atol=0.5):
+        result['message'] = 'Phi grids do not align between spheres'
+        return result
+
+    result['is_dual_sphere'] = True
+    result['message'] = f'Dual sphere detected ({sphere1_count} + {sphere2_count} phi cuts)'
+    return result
+
+
+def split_dual_sphere(
+    pattern: FarFieldSpherical
+) -> Tuple[FarFieldSpherical, FarFieldSpherical]:
+    """
+    Split a dual-sphere pattern into two separate FarFieldSpherical objects.
+
+    Sphere 1 is extracted from phi 0 to <180.
+    Sphere 2 is extracted from phi 180 to <360, with phi remapped to 0-180
+    and both e_theta and e_phi negated to account for the unit vector reversal
+    at phi+180. Works regardless of theta format (sided or central).
+
+    Args:
+        pattern: FarFieldSpherical with phi spanning 0-360
+
+    Returns:
+        tuple: (sphere1, sphere2) as FarFieldSpherical objects with phi 0-180
+
+    Raises:
+        ValueError: If pattern is not a valid dual sphere
+    """
+    detection = detect_dual_sphere(pattern)
+    if not detection['is_dual_sphere']:
+        raise ValueError(f"Pattern is not a dual sphere: {detection['message']}")
+
+    split_idx = detection['phi_split_index']
+    phi = pattern.phi_angles
+    theta = pattern.theta_angles
+    freq = pattern.frequencies
+
+    # Determine sphere 2 end index (exclude phi=360 if present)
+    phi2_end = len(phi)
+    if np.isclose(phi[-1], 360.0, atol=0.1):
+        phi2_end -= 1
+
+    # Sphere 1: phi < 180
+    phi1 = phi[:split_idx].copy()
+    e_theta1 = pattern.data.e_theta.values[:, :, :split_idx].copy()
+    e_phi1 = pattern.data.e_phi.values[:, :, :split_idx].copy()
+
+    sphere1 = FarFieldSpherical(
+        theta=theta.copy(),
+        phi=phi1,
+        frequency=freq.copy(),
+        e_theta=e_theta1,
+        e_phi=e_phi1,
+        polarization=pattern.polarization,
+        metadata={
+            'source': 'dual_sphere_split',
+            'sphere': 1,
+            'operations': []
+        }
+    )
+
+    # Sphere 2: phi >= 180, remap to 0-180, negate fields
+    # In spherical coordinates, the physical direction at (θ, φ+180) is the same
+    # as (-θ, φ). So remapping phi by -180 also requires flipping the theta axis.
+    phi2_raw = phi[split_idx:phi2_end].copy() - 180.0
+    e_theta2 = -pattern.data.e_theta.values[:, :, split_idx:phi2_end].copy()
+    e_phi2 = -pattern.data.e_phi.values[:, :, split_idx:phi2_end].copy()
+
+    # Flip theta axis: reverse data along theta dimension so that the
+    # measurement at (θ, φ+180) maps to (-θ, φ) correctly
+    e_theta2 = np.flip(e_theta2, axis=1)
+    e_phi2 = np.flip(e_phi2, axis=1)
+    # Compute sphere 2's theta: negate and reverse to maintain ascending order
+    sphere2_theta = -np.flip(theta)
+
+    # Use sphere1's phi grid if they're close but not exactly equal (float precision)
+    # This ensures average_patterns() will work without dimension mismatch
+    n_common = min(len(phi1), len(phi2_raw))
+    if np.allclose(phi1[:n_common], phi2_raw[:n_common], atol=0.5):
+        phi2 = phi1[:n_common].copy()
+        e_theta2 = e_theta2[:, :, :n_common]
+        e_phi2 = e_phi2[:, :, :n_common]
+    else:
+        phi2 = phi2_raw
+
+    # Use sphere1's theta grid if they're close (symmetric central grids)
+    if np.allclose(sphere2_theta, theta, atol=0.5):
+        sphere2_theta = theta.copy()
+
+    sphere2 = FarFieldSpherical(
+        theta=sphere2_theta,
+        phi=phi2,
+        frequency=freq.copy(),
+        e_theta=e_theta2,
+        e_phi=e_phi2,
+        polarization=pattern.polarization,
+        metadata={
+            'source': 'dual_sphere_split',
+            'sphere': 2,
+            'operations': []
+        }
+    )
+
+    return sphere1, sphere2

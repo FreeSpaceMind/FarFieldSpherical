@@ -208,8 +208,8 @@ def get_axial_ratio(pattern):
     Calculate the axial ratio (ratio of major to minor axis of polarization ellipse).
     
     Args:
-        pattern: AntennaPattern object
-        
+        pattern: FarFieldSpherical object
+
     Returns:
         xr.DataArray: Axial ratio (linear scale)
     """
@@ -270,7 +270,7 @@ def calculate_directivity(
     - P_total is the total radiated power integrated over the sphere
     
     Args:
-        pattern: AntennaPattern object
+        pattern: FarFieldSpherical object
         frequency: Frequency in Hz. If None, uses first frequency
         theta: Theta angle in degrees for specific direction calculation.
                If None, calculates peak directivity
@@ -469,38 +469,28 @@ def calculate_directivity(
 def detect_coordinate_format(pattern) -> str:
     """
     Detect whether pattern data is in 'central' or 'sided' coordinate format.
-    
+
+    Detection is based on whether negative theta values are present:
+    - Central format has negative theta (theta spans some range including negatives)
+    - Sided format has only non-negative theta (theta >= 0)
+
+    This works correctly for both full-sphere and partial-sphere patterns.
+
     Args:
         pattern: FarFieldSpherical object (or any object with theta_angles and phi_angles attributes)
-        
+
     Returns:
         str: 'central', 'sided', or 'unknown'
-        
+
     Notes:
-        - Sided format: theta 0:180, phi 0:360 (spherical convention)
-        - Central format: theta -180:180, phi 0:180 (common for antenna patterns)
+        - Sided format: theta >= 0, phi 0:360 (spherical convention)
+        - Central format: theta includes negatives, phi 0:180 (common for antenna patterns)
     """
     theta_angles = pattern.theta_angles
-    phi_angles = pattern.phi_angles
-    
-    theta_min, theta_max = np.min(theta_angles), np.max(theta_angles)
-    phi_min, phi_max = np.min(phi_angles), np.max(phi_angles)
-    
-    # Check for sided format: theta 0:180, phi 0:360
-    is_sided = (theta_min >= -5 and theta_max <= 185 and 
-                phi_min >= -5 and phi_max >= 355)
-    
-    # Check for central format: theta around ±180, phi 0:180
-    is_central = (theta_min < -5 and theta_max > 175 and
-                  phi_min >= -5 and phi_max <= 185)
-    
-    # Alternative central: theta 0:180, phi limited range
-    is_central_alt = (theta_min >= -5 and theta_max <= 185 and
-                      phi_min >= -5 and phi_max <= 185)
-    
-    if is_sided:
-        return 'sided'
-    elif is_central or is_central_alt:
+    theta_min = np.min(theta_angles)
+
+    # Central format has negative theta values
+    if theta_min < -0.5:
         return 'central'
     else:
-        return 'unknown'
+        return 'sided'

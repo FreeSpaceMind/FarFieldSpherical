@@ -8,45 +8,53 @@ from swe import SphericalWaveExpansion
 def save_pattern_npz(pattern, file_path: Union[str, Path], metadata: Optional[Dict[str, Any]] = None) -> None:
     """
     Save an antenna pattern to NPZ format for efficient loading.
-    
+
     Args:
         pattern: FarFieldSpherical object to save
         file_path: Path to save the file to
         metadata: Optional metadata to include
-        
+
     Raises:
         OSError: If file cannot be written
     """
     file_path = Path(file_path)
-    
+
     # Ensure .npz extension
     if file_path.suffix.lower() != '.npz':
         file_path = file_path.with_suffix('.npz')
-    
+
     # Extract data from pattern
-    theta = pattern.theta_angles
     phi = pattern.phi_angles
     frequency = pattern.frequencies
     e_theta = pattern.data.e_theta.values
     e_phi = pattern.data.e_phi.values
-    
+
     # Create metadata dictionary
     meta_dict = {
         'polarization': pattern.polarization,
-        'version': '1.0',
+        'version': '1.1',  # Updated version for non-uniform theta support
         'format': 'AntPy Pattern NPZ'
     }
-    
+
+    # Handle non-uniform theta grids
+    if pattern.has_uniform_theta:
+        theta = pattern.data.theta.values
+        meta_dict['non_uniform_theta'] = False
+    else:
+        # For non-uniform, store the 2D theta grid
+        theta = pattern.theta_grid  # 2D array (n_theta, n_phi)
+        meta_dict['non_uniform_theta'] = True
+
     # Add additional metadata if provided
     if metadata:
         meta_dict.update(metadata)
-    
+
     # Convert metadata to JSON string
     meta_json = json.dumps(meta_dict)
-    
+
     # Prepare save dictionary
     save_dict = {
-        'theta': theta,
+        'theta': theta,  # 1D for uniform, 2D for non-uniform
         'phi': phi,
         'frequency': frequency,
         'e_theta': e_theta,
@@ -90,23 +98,23 @@ def save_pattern_npz(pattern, file_path: Union[str, Path], metadata: Optional[Di
 def load_pattern_npz(file_path: Union[str, Path]) -> Tuple:
     """
     Load an antenna pattern from NPZ format.
-    
+
     Args:
         file_path: Path to the NPZ file
-        
+
     Returns:
         Tuple containing (pattern, metadata)
-        
+
     Raises:
         FileNotFoundError: If file does not exist
         ValueError: If file format is invalid
     """
-    
+
     file_path = Path(file_path)
-    
+
     if not file_path.exists():
         raise FileNotFoundError(f"Pattern file not found: {file_path}")
-    
+
     # Load data from NPZ file
     with np.load(file_path, allow_pickle=False) as data:
         theta = data['theta']
@@ -114,14 +122,20 @@ def load_pattern_npz(file_path: Union[str, Path]) -> Tuple:
         frequency = data['frequency']
         e_theta = data['e_theta']
         e_phi = data['e_phi']
-        
+
         # Load metadata
         metadata_json = str(data['metadata'])
         metadata = json.loads(metadata_json)
-        
+
         polarization = metadata.get('polarization')
-        
+
+        # Check for non-uniform theta (2D theta array or metadata flag)
+        # The theta array dimensionality determines uniform vs non-uniform
+        # 2D theta -> non-uniform, 1D theta -> uniform
+        # (metadata flag 'non_uniform_theta' is for documentation only)
+
         # Create FarFieldSpherical object
+        # The constructor handles both 1D and 2D theta arrays automatically
         pattern = FarFieldSpherical(
             theta=theta,
             phi=phi,

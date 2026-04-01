@@ -12,8 +12,7 @@
 If you're developing or modifying the package:
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/farfield-spherical.git
+# Navigate to the project directory
 cd farfield-spherical
 
 # Install in editable mode with dev dependencies
@@ -25,8 +24,7 @@ The `-e` flag installs the package in "editable" mode, meaning changes to the so
 ### 2. Standard Installation from Source
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/farfield-spherical.git
+# Navigate to the project directory
 cd farfield-spherical
 
 # Install the package
@@ -240,8 +238,8 @@ deactivate
 
 If you encounter issues not covered here:
 
-1. Check the [GitHub Issues](https://github.com/yourusername/farfield-spherical/issues)
-2. Open a new issue with:
+1. Check for existing issues
+2. Report the problem with:
    - Your Python version: `python --version`
    - Your OS
    - Full error message

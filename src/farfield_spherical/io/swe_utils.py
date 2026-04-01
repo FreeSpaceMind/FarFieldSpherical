@@ -1,22 +1,22 @@
 from typing import Union, Optional
 from pathlib import Path
 import numpy as np
-from swe import SphericalWaveExpansion
+from swe import SphericalWaveExpansion # pyright: ignore[reportMissingImports]
 from ..farfield import FarFieldSpherical
 
 def create_pattern_from_swe(swe: 'SphericalWaveExpansion',
                            theta_angles: Optional[np.ndarray] = None,
                            phi_angles: Optional[np.ndarray] = None) -> FarFieldSpherical:
     """
-    Create AntennaPattern from SphericalWaveExpansion object.
-    
+    Create FarFieldSpherical from SphericalWaveExpansion object.
+
     Args:
         swe: SphericalWaveExpansion object
         theta_angles: Theta angles in degrees (default: 0 to 180, 1°)
         phi_angles: Phi angles in degrees (default: 0 to 360, 5°)
-        
+
     Returns:
-        AntennaPattern object
+        FarFieldSpherical object
     """
     # Default angles - SIDED convention [0°, 180°]
     if theta_angles is None:

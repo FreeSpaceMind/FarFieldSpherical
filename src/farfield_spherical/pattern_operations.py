@@ -1,6 +1,5 @@
 """
-Mixin class that contains operations for AntennaPattern objects.
-This class is designed to be mixed into the AntennaPattern class.
+Standalone pattern operation functions for FarFieldSpherical objects.
 """
 
 import numpy as np

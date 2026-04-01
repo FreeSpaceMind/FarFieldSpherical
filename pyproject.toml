@@ -49,12 +49,6 @@ docs = [
     "sphinx-rtd-theme>=1.0.0",
 ]
 
-[project.urls]
-Homepage = "https://github.com/yourusername/farfield-spherical"
-Documentation = "https://farfield-spherical.readthedocs.io"
-Repository = "https://github.com/yourusername/farfield-spherical"
-"Bug Tracker" = "https://github.com/yourusername/farfield-spherical/issues"
-
 [tool.setuptools]
 packages = ["farfield_spherical", "farfield_spherical.io"]
 

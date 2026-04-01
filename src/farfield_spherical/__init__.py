@@ -17,8 +17,8 @@ __email__ = 'justinwlong1@gmail.com'
 from .farfield import FarFieldSpherical
 
 # I/O functions
-from .io.readers import read_cut, read_ffd, read_ticra_sph
-from .io.writers import write_cut, write_ffd, write_ticra_sph
+from .io.readers import read_cut, read_ffd, read_ticra_sph, read_atams
+from .io.writers import write_cut, write_ffd, write_ticra_sph, write_csv
 from .io.npz_format import load_pattern_npz, save_pattern_npz
 
 # Polarization functions
@@ -65,7 +65,9 @@ from .utilities import (
 # Package-level functions
 from .package_functions import (
     average_patterns,
-    difference_patterns
+    difference_patterns,
+    detect_dual_sphere,
+    split_dual_sphere
 )
 
 __all__ = [
@@ -73,8 +75,10 @@ __all__ = [
     'read_cut',
     'read_ffd',
     'read_ticra_sph',
+    'read_atams',
     'write_cut',
     'write_ffd',
+    'write_csv',
     'write_ticra_sph',
     'load_pattern_npz',
     'save_pattern_npz',
@@ -104,5 +108,7 @@ __all__ = [
     'linear_to_db',
     'interpolate_crossing',
     'average_patterns',
-    'difference_patterns'
+    'difference_patterns',
+    'detect_dual_sphere',
+    'split_dual_sphere'
 ]
