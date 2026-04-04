@@ -85,14 +85,14 @@ print(f"Angular coverage: theta=[{pattern.theta_angles.min()}, {pattern.theta_an
 ```python
 from farfield_spherical import read_cut, read_ffd, load_pattern_npz
 
-# Read GRASP .cut file
-pattern_cut = read_cut('antenna.cut')
+# Read GRASP .cut file (frequency_start and frequency_end are required)
+pattern_cut = read_cut('antenna.cut', frequency_start=1e9, frequency_end=1e9)
 
 # Read NSI .ffd file
 pattern_ffd = read_ffd('measurement.ffd')
 
-# Load from NPZ format
-pattern_npz = load_pattern_npz('saved_pattern.npz')
+# Load from NPZ format (returns a (pattern, metadata) tuple)
+pattern_npz, metadata = load_pattern_npz('saved_pattern.npz')
 ```
 
 ### Accessing Pattern Data
@@ -117,7 +117,7 @@ e_phi_data = pattern.data.e_phi.values
 ```python
 # Translate pattern (shift phase center)
 translation = np.array([0.1, 0.0, 0.0])  # meters [x, y, z]
-pattern.translate(translation, normalize=True)
+pattern.translate(translation)
 
 # Change polarization
 pattern.change_polarization('rhcp')
@@ -196,16 +196,22 @@ from farfield_spherical import (
     calculate_directivity
 )
 
-# Calculate 3D phase center
-phase_center = calculate_phase_center(pattern, frequency=1e9)
+# Calculate 3D phase center (theta_angle defines beam cone for optimization)
+phase_center = calculate_phase_center(pattern, theta_angle=10.0, frequency=1e9)
 print(f"Phase center: {phase_center} meters")
 
-# Calculate phase center in principal planes
-pc_xz, pc_yz = principal_plane_phase_center(pattern, frequency=1e9)
+# Analytic phase center from three phase measurements on a principal plane
+# Args: frequency, theta1, theta2, theta3 (radians), phase1, phase2, phase3 (radians)
+import numpy as np
+planar, zaxis = principal_plane_phase_center(
+    1e9,
+    np.radians(-5), np.radians(0), np.radians(5),
+    phase1, phase2, phase3
+)
 
-# Calculate directivity
-directivity_db = calculate_directivity(pattern, frequency=1e9)
-print(f"Directivity: {directivity_db:.2f} dBi")
+# Calculate peak directivity
+peak_dir_db, peak_theta, peak_phi = calculate_directivity(pattern, frequency=1e9)
+print(f"Peak directivity: {peak_dir_db:.2f} dBi at theta={peak_theta:.1f}, phi={peak_phi:.1f}")
 ```
 
 ## Utilities

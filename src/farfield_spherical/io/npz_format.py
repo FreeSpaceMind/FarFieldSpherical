@@ -3,7 +3,13 @@ from pathlib import Path
 import numpy as np
 import json
 from ..farfield import FarFieldSpherical
-from swe import SphericalWaveExpansion
+
+try:
+    from swe import SphericalWaveExpansion  # pyright: ignore[reportMissingImports]
+    _SWE_AVAILABLE = True
+except ImportError:
+    _SWE_AVAILABLE = False
+    SphericalWaveExpansion = None  # type: ignore[assignment,misc]
 
 def save_pattern_npz(pattern, file_path: Union[str, Path], metadata: Optional[Dict[str, Any]] = None) -> None:
     """
@@ -146,7 +152,7 @@ def load_pattern_npz(file_path: Union[str, Path]) -> Tuple:
         )
         
         # Load SWE data if present
-        if 'swe_frequencies' in data:
+        if 'swe_frequencies' in data and _SWE_AVAILABLE:
             pattern.swe = {}
             swe_frequencies = data['swe_frequencies']
             

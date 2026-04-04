@@ -3,8 +3,14 @@ from pathlib import Path
 import warnings
 
 from ..farfield import FarFieldSpherical
-from swe import SphericalWaveExpansion # pyright: ignore[reportMissingImports]
 import numpy as np
+
+try:
+    from swe import SphericalWaveExpansion  # pyright: ignore[reportMissingImports]
+    _SWE_AVAILABLE = True
+except ImportError:
+    _SWE_AVAILABLE = False
+    SphericalWaveExpansion = None  # type: ignore[assignment,misc]
 
 
 def _ensure_uniform_theta(pattern, format_name: str):
@@ -64,6 +70,14 @@ def write_cut(pattern, file_path: Union[str, Path], polarization_format: int = 1
     e_theta = pattern.data.e_theta.values
     e_phi = pattern.data.e_phi.values
     
+    from ..polarization import polarization_tp2rl, polarization_tp2xy
+
+    theta_start = theta[0]
+    theta_step = theta[1] - theta[0] if len(theta) > 1 else 1.0
+    num_theta = len(theta)
+    icut = 1   # Standard polar cut (phi fixed, theta varying)
+    ncomp = 2  # Two field components
+
     with open(file_path, 'w') as f:
         # Write data for each frequency
         for freq_idx, freq in enumerate(frequencies):
@@ -71,26 +85,17 @@ def write_cut(pattern, file_path: Union[str, Path], polarization_format: int = 1
             for phi_idx, phi_val in enumerate(phi):
                 # Write text description line for this cut
                 f.write(f"{freq/1e6:.3f} MHz, Phi = {phi_val:.1f} deg\n")
-                
+
                 # Write cut header: theta_start, theta_step, num_theta, phi, icomp, icut, ncomp
-                theta_start = theta[0]
-                theta_step = theta[1] - theta[0] if len(theta) > 1 else 1.0
-                num_theta = len(theta)
-                icut = 1  # Standard polar cut (phi fixed, theta varying)
-                ncomp = 2  # Two field components
-                
                 f.write(f"{theta_start:.2f} {theta_step:.6f} {num_theta} {phi_val:.2f} {polarization_format} {icut} {ncomp}\n")
-                
+
                 # Convert field components based on polarization format
                 for theta_idx in range(len(theta)):
                     if polarization_format == 1:
-                        # Theta/phi format
                         comp1 = e_theta[freq_idx, theta_idx, phi_idx]
                         comp2 = e_phi[freq_idx, theta_idx, phi_idx]
-                        
+
                     elif polarization_format == 2:
-                        # RHCP/LHCP format
-                        from ..polarization import polarization_tp2rl
                         e_r, e_l = polarization_tp2rl(
                             phi_val,
                             e_theta[freq_idx, theta_idx, phi_idx:phi_idx+1],
@@ -98,10 +103,8 @@ def write_cut(pattern, file_path: Union[str, Path], polarization_format: int = 1
                         )
                         comp1 = e_r[0]  # RHCP
                         comp2 = e_l[0]  # LHCP
-                        
+
                     elif polarization_format == 3:
-                        # X/Y format
-                        from ..polarization import polarization_tp2xy
                         e_x, e_y = polarization_tp2xy(
                             phi_val,
                             e_theta[freq_idx, theta_idx, phi_idx:phi_idx+1],
@@ -109,7 +112,7 @@ def write_cut(pattern, file_path: Union[str, Path], polarization_format: int = 1
                         )
                         comp1 = e_x[0]  # X component
                         comp2 = e_y[0]  # Y component
-                    
+
                     # Write complex components
                     f.write(f"{comp1.real:.6e} {comp1.imag:.6e} {comp2.real:.6e} {comp2.imag:.6e}\n")
 
@@ -171,7 +174,11 @@ def write_ticra_sph(swe: 'SphericalWaveExpansion', file_path: Union[str, Path],
         program_tag: Program tag (ignored, for compatibility)
         id_string: Description string
     """
-    # Use the new module's writer
+    if not _SWE_AVAILABLE:
+        raise ImportError(
+            "The 'swe' package is required to write TICRA .sph files. "
+            "Install it with: pip install farfield-spherical[swe]"
+        )
     swe.to_sph_file(str(file_path), description=id_string)
 
 

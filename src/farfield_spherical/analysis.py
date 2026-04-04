@@ -97,7 +97,7 @@ def calculate_phase_center(pattern, theta_angle: float, frequency: Optional[floa
         return flatness_metric
     
     # Calculate wavelength for scaled step sizes
-    wavelength = 3e8 / freq  # Speed of light / frequency
+    wavelength = lightspeed / freq
     step_size = wavelength / 20  # Reasonable step size based on wavelength
     
     # Define a step-taking function for basinhopping
@@ -377,24 +377,8 @@ def calculate_directivity(
     
     if use_partial_sphere:
         
-        # Check if sampling might be too coarse
         peak_intensity = np.max(radiation_intensity)
-        peak_idx = np.unravel_index(np.argmax(radiation_intensity), radiation_intensity.shape)
-        
-        # Estimate beamwidth by finding -3dB points
-        intensity_db = 10 * np.log10(np.maximum(radiation_intensity, peak_intensity * 1e-10))
-        peak_db = 10 * np.log10(peak_intensity)
-        
-        # Check theta beamwidth around peak
-        phi_cut = intensity_db[peak_idx[0], :]
-        phi_3db_indices = np.where(phi_cut >= peak_db - 3)[0]
-        phi_beamwidth = len(phi_3db_indices) * np.abs(np.diff(phi_array)[0]) if len(phi_array) > 1 else 0
-        
-        # Check phi beamwidth around peak (theta direction)
-        theta_cut = intensity_db[:, peak_idx[1]]
-        theta_3db_indices = np.where(theta_cut >= peak_db - 3)[0]
-        theta_beamwidth = len(theta_3db_indices) * np.abs(np.diff(theta_array)[0]) if len(theta_array) > 1 else 0
-        
+
         # Estimate power in unmeasured regions
         if far_sidelobe_level_db is not None:
             # Use far sidelobe assumption - more accurate for antenna patterns
@@ -480,7 +464,7 @@ def detect_coordinate_format(pattern) -> str:
         pattern: FarFieldSpherical object (or any object with theta_angles and phi_angles attributes)
 
     Returns:
-        str: 'central', 'sided', or 'unknown'
+        str: 'central' or 'sided'
 
     Notes:
         - Sided format: theta >= 0, phi 0:360 (spherical convention)
@@ -489,8 +473,6 @@ def detect_coordinate_format(pattern) -> str:
     theta_angles = pattern.theta_angles
     theta_min = np.min(theta_angles)
 
-    # Central format has negative theta values
     if theta_min < -0.5:
         return 'central'
-    else:
-        return 'sided'
+    return 'sided'

@@ -140,3 +140,7 @@ Thumbs.db
 *.sph
 data/
 examples/data/
+
+# Allow test data files
+!tests/data/*.cut
+!tests/data/*.sph

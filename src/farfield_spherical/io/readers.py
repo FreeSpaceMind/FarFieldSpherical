@@ -2,7 +2,13 @@ from pathlib import Path
 from typing import Union, Optional
 import numpy as np
 from ..farfield import FarFieldSpherical
-from swe import SphericalWaveExpansion
+
+try:
+    from swe import SphericalWaveExpansion  # pyright: ignore[reportMissingImports]
+    _SWE_AVAILABLE = True
+except ImportError:
+    _SWE_AVAILABLE = False
+    SphericalWaveExpansion = None  # type: ignore[assignment,misc]
 
 def read_cut(file_path: Union[str, Path], frequency_start: float, frequency_end: float):
     """
@@ -37,56 +43,18 @@ def read_cut(file_path: Union[str, Path], frequency_start: float, frequency_end:
     total_lines = len(lines)
     line_index = 0
     
-    # Use lists with pre-estimated size for better performance
-    estimated_phi_count = 36  # Typical number of phi cuts
-    estimated_freq_count = 5  # Typical number of frequencies
-    estimated_theta_count = 181  # Typical number of theta points
-    
     phi = []
     ya_data = []
     yb_data = []
-    
-    # Use NumPy arrays to store theta array once
+
     theta = None
     icomp = None
-    
-    # Preallocate header info
+
     theta_start = 0
     theta_increment = 0
     theta_length = 0
-    
-    # Scan file structure to determine pattern dimensions
-    # First pass to determine dimensions
-    first_pass = True
-    phi_values = set()
-    header_count = 0
-    
-    if first_pass:
-        while line_index < min(1000, total_lines):  # Just scan the first part of the file
-            if "MHz" in lines[line_index]:
-                line_index += 1
-                if line_index >= total_lines:
-                    break
-                    
-                # This should be a header line (numeric data)
-                header_parts = lines[line_index].strip().split()
-                if len(header_parts) >= 7:  # Updated from 5 to 7
-                    header_count += 1
-                    phi_values.add(float(header_parts[3]))
-                
-            line_index += 1
-        
-        # Reset line index for main parsing
-        line_index = 0
-        first_pass = False
-        
-        # Estimate dimensions more accurately
-        estimated_phi_count = len(phi_values)
-        
-        if header_count > 0:
-            estimated_freq_count = header_count // estimated_phi_count
-    
-    # Main parsing - optimized for speed
+
+    # Main parsing
     header_flag = True
     first_flag = True
     data_counter = 0
@@ -350,7 +318,11 @@ def read_ticra_sph(file_path: Union[str, Path]) -> 'SphericalWaveExpansion':
         SphericalWaveExpansion object
     """
 
-    # Use the new module's reader
+    if not _SWE_AVAILABLE:
+        raise ImportError(
+            "The 'swe' package is required to read TICRA .sph files. "
+            "Install it with: pip install farfield-spherical[swe]"
+        )
     swe = SphericalWaveExpansion.from_sph_file(str(file_path))
 
     return swe

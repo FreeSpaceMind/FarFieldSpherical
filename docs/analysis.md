@@ -101,7 +101,7 @@ See [Pattern Operations - Phase Center Optimization](pattern_operations.md#phase
 
 Uses three measured phase points on a principal plane to analytically solve for the phase center displacement in that plane.
 
-See [Pattern Operations - Principal Plane Method](pattern_operations.md#principal-plane-method) for the formula.
+See [Pattern Operations - Phase Center Optimization](pattern_operations.md#phase-center-optimization) for algorithmic details on the principal plane formula.
 
 ### Practical Considerations
 

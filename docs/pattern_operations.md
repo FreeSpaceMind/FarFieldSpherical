@@ -177,24 +177,6 @@ $$E'(\theta, \phi_i) = E(\theta, \phi_i) \cdot \frac{E_{ref}}{E(\theta=0, \phi_i
 
 This is a complex-valued scaling that adjusts both amplitude and phase of each cut to match the median boresight value.
 
-## Coordinate Origin Shifting
-
-### Theta Shift
-
-Shifts the theta axis by a constant offset, effectively tilting the pattern:
-
-$$\theta'_{old} = \theta - \Delta\theta$$
-
-The field values at the new theta positions are obtained by cubic interpolation from the original data. Amplitude (in dB) and phase are interpolated separately for numerical stability — interpolating the complex field directly can introduce artifacts when the phase wraps.
-
-### Phi Shift
-
-Rotates the pattern in the azimuthal direction:
-
-$$\phi' = (\phi + \Delta\phi) \mod 360°$$
-
-Since this is an integer-grid-point shift (assuming $\Delta\phi$ is a multiple of the phi step), the data is simply reordered along the phi axis without interpolation. This is an exact operation with no interpolation error.
-
 ## Pattern Mirroring
 
 Mirrors the pattern across the $\theta = 0°$ plane, creating a symmetric pattern:
@@ -221,14 +203,3 @@ $$\text{Im}[E'(f')] = \text{interp}\left(\text{Im}[E(f_1)], \text{Im}[E(f_2)], \
 
 Interpolating real and imaginary parts separately avoids discontinuity issues that arise when interpolating magnitude and phase directly (phase wrapping) or when interpolating the complex values directly across resonances.
 
-## Subsampling
-
-Reduces the angular resolution of the pattern by selecting a subset of the grid points.
-
-### Method
-
-For each desired output angle, the nearest available grid point in the original data is selected. This is a nearest-neighbor selection, not interpolation, so no new values are created.
-
-### Phi Wraparound
-
-The subsampling algorithm handles the $0°/360°$ wraparound in $\phi$ correctly. When the requested phi range crosses $0°$ (e.g., $350°$ to $10°$), the algorithm accounts for the circular topology of the azimuthal coordinate.

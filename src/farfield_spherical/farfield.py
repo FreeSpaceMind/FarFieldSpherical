@@ -1,11 +1,13 @@
 """
 Core class for far-field spherical antenna pattern representation and manipulation.
 """
+import warnings
 import numpy as np
 import xarray as xr
 from typing import Optional, Union, Tuple, Dict, Any, Set, Generator
 from pathlib import Path
 from contextlib import contextmanager
+from scipy.interpolate import interp1d
 
 from .utilities import find_nearest
 from .polarization import (
@@ -15,7 +17,13 @@ from .analysis import (
     calculate_phase_center, get_axial_ratio
     )
 from .farfield_operations import FarFieldOperationsMixin
-from swe import SphericalWaveExpansion # pyright: ignore[reportMissingImports]
+from .pattern_operations import unwrap_phase
+try:
+    from swe import SphericalWaveExpansion  # pyright: ignore[reportMissingImports]
+    _SWE_AVAILABLE = True
+except ImportError:
+    _SWE_AVAILABLE = False
+    SphericalWaveExpansion = None  # type: ignore[assignment,misc]
 
 class FarFieldSpherical(FarFieldOperationsMixin):
     """
@@ -269,8 +277,6 @@ class FarFieldSpherical(FarFieldOperationsMixin):
             If the pattern already has a uniform theta grid, returns a copy.
             Uses scipy.interpolate.interp1d (linear) per-phi, per-frequency.
         """
-        from scipy.interpolate import interp1d
-
         # If already uniform, return a copy
         if self.has_uniform_theta:
             return self.copy()
@@ -300,6 +306,23 @@ class FarFieldSpherical(FarFieldOperationsMixin):
 
             # Generate uniform theta array
             theta = np.arange(theta_min, theta_max + step / 2, step)
+
+        # Warn if the target theta range exceeds any phi cut's measured range
+        any_extrap = False
+        for phi_idx in range(len(self.phi_angles)):
+            phi_theta = self.get_theta_for_phi(phi_idx)
+            if theta[0] < np.min(phi_theta) or theta[-1] > np.max(phi_theta):
+                any_extrap = True
+                break
+        if any_extrap:
+            warnings.warn(
+                "to_uniform_theta: the target theta range extends beyond the measured "
+                "range for one or more phi cuts. Field values will be linearly "
+                "extrapolated, which may be inaccurate. Consider limiting the target "
+                "theta range to the common measured region.",
+                UserWarning,
+                stacklevel=2
+            )
 
         # Interpolate fields to the new uniform theta grid
         n_freq = len(self.frequencies)
@@ -379,7 +402,7 @@ class FarFieldSpherical(FarFieldOperationsMixin):
 
         Example:
         ```python
-                pattern = FarFieldSpherical.from_ticra_sph('antenna.sph', frequency=9.2e9)
+        pattern = FarFieldSpherical.from_ticra_sph('antenna.sph', frequency=9.2e9)
         ```
         """
         from .io.readers import read_ticra_sph
@@ -388,8 +411,8 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         # Read SWE coefficients
         swe_data = read_ticra_sph(file_path)
 
-        # Create pattern from coefficients
-        pattern = create_pattern_from_swe(swe_data, theta_angles, phi_angles)
+        # Create pattern from coefficients at the requested frequency
+        pattern = create_pattern_from_swe(swe_data, theta_angles, phi_angles, frequency)
 
         return pattern
 
@@ -537,13 +560,17 @@ class FarFieldSpherical(FarFieldOperationsMixin):
 
     def get_gain_db(self, component: str = 'e_co') -> xr.DataArray:
         """
-        Get gain in dB for a specific field component.
-        
+        Get field magnitude in dB (20 * log10|E|) for a specific field component.
+
+        This returns the field amplitude level in dB relative to the stored field
+        units, not antenna gain in dBi. To compute true antenna gain or directivity
+        use ``calculate_directivity()``.
+
         Args:
             component: Field component ('e_co', 'e_cx', 'e_theta', 'e_phi')
-            
+
         Returns:
-            xr.DataArray: Gain in dB
+            xr.DataArray: Field magnitude in dB
         """
         cache_key = f"gain_db_{component}"
         if cache_key in self._cache:
@@ -564,8 +591,6 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         Returns:
             xr.DataArray: Phase in radians
         """
-        from .pattern_operations import unwrap_phase
-
         if component not in self.data:
             raise KeyError(f"Component {component} not found in pattern data.")
         
@@ -601,21 +626,6 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         
         return ar
     
-    def mirror_pattern(self) -> None:
-        """
-        Mirror the pattern across the theta=0 plane.
-        
-        This function reflects the pattern data across the theta=0 plane,
-        effectively mirroring the pattern. It's useful for creating symmetric patterns
-        or for fixing incomplete measurement data.
-        
-        Notes:
-            If the pattern does not include theta=0, the function will raise a ValueError.
-            The pattern should have theta values in [-180, 180] range.
-        """
-        # Call the mixin method
-        super().mirror_pattern()
-
     def write_ffd(self, file_path: Union[str, Path]) -> None:
         """
         Write the far-field pattern to HFSS far field data format (.ffd).
@@ -645,7 +655,7 @@ class FarFieldSpherical(FarFieldOperationsMixin):
             ValueError: If polarization_format is invalid
         """
         from .io.writers import write_cut
-        write_cut(self, file_path)
+        write_cut(self, file_path, polarization_format)
 
     def save_pattern_npz(self, file_path: Union[str, Path], metadata: Optional[Dict[str, Any]] = None) -> None:
         """
@@ -686,16 +696,13 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         from .io.writers import write_csv
         write_csv(self, file_path, components, include_complex)
 
-    def calculate_spherical_modes(self, radius: Optional[float] = None,
-                                frequency: Optional[float] = None,
+    def calculate_spherical_modes(self, frequency: Optional[float] = None,
                                 nmax: Optional[int] = None,
                                 mmax: Optional[int] = None) -> 'SphericalWaveExpansion':
         """Calculate spherical wave expansion from the far-field pattern.
 
         Parameters
         ----------
-        radius : float, optional
-            Not currently used, reserved for future near-field input.
         frequency : float, optional
             Frequency in Hz. Defaults to first frequency.
         nmax : int, optional
@@ -703,6 +710,12 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         mmax : int, optional
             Maximum azimuthal mode index. If None, determined automatically.
         """
+
+        if not _SWE_AVAILABLE:
+            raise ImportError(
+                "The 'swe' package is required for spherical wave expansion. "
+                "Install it with: pip install farfield-spherical[swe]"
+            )
 
         if frequency is None:
             frequency = self.frequencies[0]
@@ -769,8 +782,10 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         Returns:
             Beamwidth in degrees (half-angle from boresight)
         """
+        self._require_uniform_theta('find_beamwidth_at_db_level')
+
         from .utilities import find_nearest
-        
+
         # Get frequency index
         if frequency is None:
             freq_idx = 0
