@@ -77,25 +77,27 @@ def save_pattern_npz(pattern, file_path: Union[str, Path], metadata: Optional[Di
         for i, freq in enumerate(swe_frequencies):
             swe_obj = pattern.swe[freq]
             prefix = f'swe_{i}_'
-            
-            # Convert coefficient dicts to arrays for storage
-            modes = sorted(set(swe_obj.Q1_coeffs.keys()) | set(swe_obj.Q2_coeffs.keys()))
-            
-            Q1_array = np.array([swe_obj.Q1_coeffs.get(mode, 0.0) for mode in modes])
-            Q2_array = np.array([swe_obj.Q2_coeffs.get(mode, 0.0) for mode in modes])
+
+            # Q1_coeffs/Q2_coeffs are callables: swe_obj.Q1_coeffs(freq) -> dict
+            q1_dict = swe_obj.Q1_coeffs(freq)
+            q2_dict = swe_obj.Q2_coeffs(freq)
+            modes = sorted(set(q1_dict.keys()) | set(q2_dict.keys()))
+
+            Q1_array = np.array([q1_dict.get(mode, 0.0) for mode in modes])
+            Q2_array = np.array([q2_dict.get(mode, 0.0) for mode in modes])
             modes_array = np.array(modes)
-            
+
             save_dict[f'{prefix}Q1_coeffs'] = Q1_array
             save_dict[f'{prefix}Q2_coeffs'] = Q2_array
             save_dict[f'{prefix}modes'] = modes_array
-            
-            # Save metadata
+
+            # NMAX/MMAX are callables: swe_obj.NMAX(freq) -> int
             swe_meta = {
-                'NMAX': int(swe_obj.NMAX),
-                'MMAX': int(swe_obj.MMAX),
-                'frequency': float(swe_obj.frequency) if swe_obj.frequency else None,
+                'NMAX': int(swe_obj.NMAX(freq)),
+                'MMAX': int(swe_obj.MMAX(freq)),
+                'frequency': float(freq),
             }
-            
+
             save_dict[f'{prefix}metadata'] = json.dumps(swe_meta)
     
     # Save data to NPZ file
@@ -171,13 +173,14 @@ def load_pattern_npz(file_path: Union[str, Path]) -> Tuple:
                 # Load metadata
                 swe_meta = json.loads(str(data[f'{prefix}metadata']))
                 
-                # Create SWE object
+                # Create SWE object — constructor takes {freq: dict} for coeffs,
+                # {freq: int} for NMAX/MMAX; no frequency= param
+                freq_key = swe_meta['frequency']
                 swe_obj = SphericalWaveExpansion(
-                    Q1_coeffs=Q1_coeffs,
-                    Q2_coeffs=Q2_coeffs,
-                    frequency=swe_meta['frequency'],
-                    NMAX=swe_meta['NMAX'],
-                    MMAX=swe_meta['MMAX']
+                    Q1_coeffs={freq_key: Q1_coeffs},
+                    Q2_coeffs={freq_key: Q2_coeffs},
+                    NMAX={freq_key: swe_meta['NMAX']},
+                    MMAX={freq_key: swe_meta['MMAX']}
                 )
                 
                 pattern.swe[float(freq)] = swe_obj

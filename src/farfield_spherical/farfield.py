@@ -748,19 +748,24 @@ class FarFieldSpherical(FarFieldOperationsMixin):
             )
 
         # Post-process: truncate to user-specified NMAX/MMAX
+        # Q1_coeffs/Q2_coeffs and NMAX/MMAX are callables; must reconstruct object
         if nmax is not None or mmax is not None:
-            n_limit = nmax if nmax is not None else swe_obj.NMAX
-            m_limit = mmax if mmax is not None else swe_obj.MMAX
-            swe_obj.Q1_coeffs = {
-                (n, m): v for (n, m), v in swe_obj.Q1_coeffs.items()
+            n_limit = nmax if nmax is not None else swe_obj.NMAX(frequency)
+            m_limit = mmax if mmax is not None else swe_obj.MMAX(frequency)
+            q1_filtered = {
+                (n, m): v for (n, m), v in swe_obj.Q1_coeffs(frequency).items()
                 if n <= n_limit and abs(m) <= m_limit
             }
-            swe_obj.Q2_coeffs = {
-                (n, m): v for (n, m), v in swe_obj.Q2_coeffs.items()
+            q2_filtered = {
+                (n, m): v for (n, m), v in swe_obj.Q2_coeffs(frequency).items()
                 if n <= n_limit and abs(m) <= m_limit
             }
-            swe_obj.NMAX = n_limit
-            swe_obj.MMAX = m_limit
+            swe_obj = SphericalWaveExpansion(
+                Q1_coeffs={frequency: q1_filtered},
+                Q2_coeffs={frequency: q2_filtered},
+                NMAX={frequency: n_limit},
+                MMAX={frequency: m_limit}
+            )
 
         return swe_obj
     
