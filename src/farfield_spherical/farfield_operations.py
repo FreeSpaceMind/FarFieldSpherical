@@ -190,7 +190,7 @@ class FarFieldOperationsMixin:
         theta_ref_idx = np.argmin(np.abs(theta - reference_theta))
         phi_ref_idx = np.argmin(np.abs(phi - reference_phi))
         
-        # Get reference angle values (for logging)
+        # Actual reference angle values (recorded in metadata)
         theta_ref_actual = theta[theta_ref_idx]
         phi_ref_actual = phi[phi_ref_idx]
         
@@ -295,49 +295,25 @@ class FarFieldOperationsMixin:
 
     def rotate(self, alpha: float, beta: float, gamma: float) -> None:
         """
-        Rotate the pattern using Euler angles (isometric rotation).
+        Rotate the pattern using Euler angles.
 
         Args:
-            alpha: First rotation angle in degrees (z-axis)
-            beta: Second rotation angle in degrees (y-axis)
-            gamma: Third rotation angle in degrees (z-axis)
+            alpha: First rotation angle in degrees (azimuth, y-axis)
+            beta: Second rotation angle in degrees (elevation, x-axis)
+            gamma: Third rotation angle in degrees (roll, z-axis)
 
-        Note:
-            This modifies the pattern in-place.
+        Raises:
+            NotImplementedError: This method is not yet functional. The underlying
+                rotation logic requires interpolation of field vectors onto a rotated
+                spherical grid, which is not yet implemented. Use the standalone
+                ``isometric_rotation`` and ``transform_uvw2tp`` functions from
+                ``pattern_operations`` as building blocks for a custom implementation.
         """
-        self._require_uniform_theta('rotate')
-
-        from .pattern_operations import isometric_rotation
-
-        # Apply rotation to each frequency
-        for freq_idx in range(len(self.frequencies)):
-            e_theta_rot, e_phi_rot = isometric_rotation(
-                self.theta_angles,
-                self.phi_angles,
-                self.data.e_theta.values[freq_idx],
-                self.data.e_phi.values[freq_idx],
-                alpha, beta, gamma
-            )
-            
-            self.data.e_theta.values[freq_idx] = e_theta_rot
-            self.data.e_phi.values[freq_idx] = e_phi_rot
-        
-        # Recompute co/cx polarization
-        self.assign_polarization(self.polarization)
-        
-        # Clear cache
-        self.clear_cache()
-        
-        # Update metadata
-        if hasattr(self, 'metadata') and self.metadata is not None:
-            if 'operations' not in self.metadata:
-                self.metadata['operations'] = []
-            self.metadata['operations'].append({
-                'type': 'rotate',
-                'alpha': alpha,
-                'beta': beta,
-                'gamma': gamma
-            })
+        raise NotImplementedError(
+            "rotate() is not yet implemented. The isometric_rotation helper in "
+            "pattern_operations.py computes rotated direction cosines, but the "
+            "subsequent field interpolation onto the rotated grid is missing."
+        )
 
     def unwrap_phase(self, component: str = 'e_co', axis: int = 1) -> np.ndarray:
         """
@@ -419,7 +395,7 @@ class FarFieldOperationsMixin:
 
         # Interpolate complex fields
         e_theta_interp = np.zeros((len(new_frequencies), len(self.theta_angles),
-                                   len(self.phi_angles)), dtype=complex)
+                                   len(self.phi_angles)), dtype=np.complex64)
         e_phi_interp = np.zeros_like(e_theta_interp)
         
         for i, theta_idx in enumerate(self.theta_angles):
@@ -533,8 +509,8 @@ class FarFieldOperationsMixin:
             new_phi = np.concatenate((phi, phi+180))
             
             # Initialize new electric field arrays
-            new_e_theta = np.zeros((frequencies.size, len(new_theta), len(new_phi)), dtype=np.complex128)
-            new_e_phi = np.zeros((frequencies.size, len(new_theta), len(new_phi)), dtype=np.complex128)
+            new_e_theta = np.zeros((frequencies.size, len(new_theta), len(new_phi)), dtype=np.complex64)
+            new_e_phi = np.zeros((frequencies.size, len(new_theta), len(new_phi)), dtype=np.complex64)
             
             # Fill new electric field arrays
             # First half of phi range - copy from positive theta
@@ -593,8 +569,8 @@ class FarFieldOperationsMixin:
                 new_phi = phi
             
             # Initialize new electric field arrays
-            new_e_theta = np.zeros((frequencies.size, len(new_theta), len(new_phi)), dtype=np.complex128)
-            new_e_phi = np.zeros((frequencies.size, len(new_theta), len(new_phi)), dtype=np.complex128)
+            new_e_theta = np.zeros((frequencies.size, len(new_theta), len(new_phi)), dtype=np.complex64)
+            new_e_phi = np.zeros((frequencies.size, len(new_theta), len(new_phi)), dtype=np.complex64)
             
             # Fill new electric field arrays
             # Positive theta section (original data)
@@ -779,7 +755,7 @@ class FarFieldOperationsMixin:
                 # Compute mode coefficient for theta component
                 CMC_1 = (
                     -1 * ((-1j) ** (-n)) / (4 * np.pi * wavenumber) *
-                    np.trapz(
+                    np.trapezoid(
                         (e_theta[f_idx, :, :].transpose() * exp_terms[n_idx, :]).transpose(),
                         theta_rad, axis=0
                     )
@@ -788,7 +764,7 @@ class FarFieldOperationsMixin:
                 # Compute mode coefficient for phi component
                 CMC_2 = (
                     -1j * ((-1j) ** (-n)) / (4 * np.pi * wavenumber) *
-                    np.trapz(
+                    np.trapezoid(
                         (e_phi[f_idx, :, :].transpose() * exp_terms[n_idx, :]).transpose(),
                         theta_rad, axis=0
                     )
@@ -831,20 +807,40 @@ class FarFieldOperationsMixin:
     def swap_polarization_axes(self) -> None:
         """
         Swap vertical and horizontal polarization ports.
+
+        Exchanges the X and Y Ludwig-3 components by converting to the X/Y basis,
+        swapping them, then converting back to theta/phi. This is equivalent to
+        physically rotating the antenna feed by 90 degrees.
+
+        Note:
+            This modifies the pattern in-place.
         """
-        
         # Get data
         phi = self.data.phi.values
-        e_theta = self.data.e_theta.values 
+        e_theta = self.data.e_theta.values
         e_phi = self.data.e_phi.values
-        
-        # Convert to x/y and back to swap the axes
+
+        # Convert to x/y, swap axes, convert back
         e_x, e_y = polarization_tp2xy(phi, e_theta, e_phi)
-        e_theta_new, e_phi_new = polarization_xy2tp(phi, e_y, e_x)  # Note: x and y are swapped
-        
-        # Update the pattern data directly
+        e_theta_new, e_phi_new = polarization_xy2tp(phi, e_y, e_x)
+
+        # Update the pattern data
         self.data['e_theta'].values = e_theta_new
         self.data['e_phi'].values = e_phi_new
+
+        # Recompute co/cx polarization
+        self.assign_polarization(self.polarization)
+
+        # Clear cache
+        self.clear_cache()
+
+        # Update metadata
+        if hasattr(self, 'metadata') and self.metadata is not None:
+            if 'operations' not in self.metadata:
+                self.metadata['operations'] = []
+            self.metadata['operations'].append({
+                'type': 'swap_polarization_axes'
+            })
         
         # Recalculate derived components e_co and e_cx
         self.assign_polarization(self.polarization)

@@ -9,10 +9,6 @@ lightspeed = 299792458  # Speed of light in vacuum (m/s)
 freespace_permittivity = 8.8541878128e-12  # Vacuum permittivity (F/m)
 freespace_impedance = 376.730313668  # Impedance of free space (Ohms)
 
-# Astronomical constants
-moon_radius = 1737.1e3  # Mean radius of the Moon (m)
-earth_radius = 6378.14e3  # Mean equatorial radius of the Earth (m)
-
 # Type aliases
 NumericArray = Union[np.ndarray, List[float], List[int], Tuple[float, ...], Tuple[int, ...]]
 

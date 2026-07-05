@@ -26,8 +26,8 @@ def average_patterns(patterns: List[FarFieldSpherical], weights: Optional[List[f
         ValueError: If patterns have incompatible dimensions
         ValueError: If weights are provided but don't match the number of patterns
     """
-    if len(patterns) < 1:
-        raise ValueError("At least one pattern is required for averaging")
+    if len(patterns) < 2:
+        raise ValueError("At least two patterns are required for averaging")
     
     # Get reference dimensions from first pattern
     theta = patterns[0].theta_angles
@@ -179,7 +179,7 @@ def difference_patterns(
     if pol in ('rhcp', 'rh', 'r', 'lhcp', 'lh', 'l'):
         # For circular: convert from RL back to theta/phi
         for f_idx in range(len(freq1)):
-            e_theta_temp, e_phi_temp = polarization_rl2tp(e_co_diff[f_idx], e_cx_diff[f_idx])
+            e_theta_temp, e_phi_temp = polarization_rl2tp(phi1, e_co_diff[f_idx], e_cx_diff[f_idx])
             e_theta_diff[f_idx] = e_theta_temp
             e_phi_diff[f_idx] = e_phi_temp
     elif pol in ('x', 'l3x'):
