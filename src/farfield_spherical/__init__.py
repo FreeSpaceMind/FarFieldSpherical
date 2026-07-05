@@ -17,7 +17,7 @@ __email__ = 'justinwlong1@gmail.com'
 from .farfield import FarFieldSpherical
 
 # I/O functions
-from .io.readers import read_cut, read_ffd, read_ticra_sph, read_atams
+from .io.readers import read_cut, read_ffd, read_ticra_sph, read_atams, scan_sph_frequencies
 from .io.writers import write_cut, write_ffd, write_ticra_sph, write_csv
 from .io.npz_format import load_pattern_npz, save_pattern_npz
 
@@ -76,6 +76,7 @@ __all__ = [
     'read_ffd',
     'read_ticra_sph',
     'read_atams',
+    'scan_sph_frequencies',
     'write_cut',
     'write_ffd',
     'write_csv',

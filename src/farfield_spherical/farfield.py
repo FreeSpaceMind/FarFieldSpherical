@@ -3,7 +3,7 @@ Core class for far-field spherical antenna pattern representation and manipulati
 """
 import numpy as np
 import xarray as xr
-from typing import Optional, Union, Tuple, Dict, Any, Set, Generator
+from typing import Optional, Union, Tuple, Dict, Any, Set, Generator, Sequence
 from pathlib import Path
 from contextlib import contextmanager
 
@@ -356,7 +356,8 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         )
 
     @classmethod
-    def from_ticra_sph(cls, file_path: Union[str, Path], frequency: float,
+    def from_ticra_sph(cls, file_path: Union[str, Path],
+                    frequency: Optional[Union[float, Sequence[float]]] = None,
                     theta_angles: Optional[np.ndarray] = None,
                     phi_angles: Optional[np.ndarray] = None) -> 'FarFieldSpherical':
         """
@@ -370,7 +371,7 @@ class FarFieldSpherical(FarFieldOperationsMixin):
 
         Args:
             file_path: Path to .sph file
-            frequency: Frequency in Hz
+            frequency: None for all blocks, a frequency in Hz, or a sequence in Hz
             theta_angles: Theta angles for reconstruction (default: -180 to 180, 1°)
             phi_angles: Phi angles for reconstruction (default: 0 to 360, 5°)
 
@@ -385,11 +386,23 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         from .io.readers import read_ticra_sph
         from .io.swe_utils import create_pattern_from_swe
 
+        if frequency is None:
+            requested = None
+        elif np.isscalar(frequency):
+            requested = [float(frequency)]
+        else:
+            requested = [float(freq) for freq in frequency]
+
         # Read SWE coefficients
-        swe_data = read_ticra_sph(file_path)
+        swe_data = read_ticra_sph(file_path, frequencies=requested)
 
         # Create pattern from coefficients
-        pattern = create_pattern_from_swe(swe_data, theta_angles, phi_angles)
+        pattern = create_pattern_from_swe(
+            swe_data,
+            theta_angles,
+            phi_angles,
+            frequencies=requested,
+        )
 
         return pattern
 

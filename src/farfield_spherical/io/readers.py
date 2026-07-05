@@ -1,8 +1,31 @@
 from pathlib import Path
-from typing import Union, Optional
+from typing import Union, Optional, Iterable
+import re
 import numpy as np
 from ..farfield import FarFieldSpherical
 from swe import SphericalWaveExpansion
+
+
+def scan_sph_frequencies(file_path: Union[str, Path]) -> list[float]:
+    """Return frequencies (Hz) of all blocks in a TICRA .sph file.
+
+    Reads only header lines and does not parse coefficient records.
+    """
+    file_path = Path(file_path)
+    if not file_path.exists():
+        raise FileNotFoundError(f"SPH file not found: {file_path}")
+
+    frequencies = []
+    pattern = re.compile(r"Freq\s*\[GHz\]\s*:\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?)")
+    with open(file_path, "r") as reader:
+        for line in reader:
+            match = pattern.search(line)
+            if match:
+                frequencies.append(float(match.group(1)) * 1e9)
+
+    if not frequencies:
+        raise ValueError(f"No 'Freq [GHz]:' lines found in {file_path}")
+    return frequencies
 
 def read_cut(file_path: Union[str, Path], frequency_start: float, frequency_end: float):
     """
@@ -338,7 +361,8 @@ def read_ffd(file_path: Union[str, Path]):
         e_phi=e_phi_final
     )
 
-def read_ticra_sph(file_path: Union[str, Path]) -> 'SphericalWaveExpansion':
+def read_ticra_sph(file_path: Union[str, Path],
+                   frequencies: Optional[Iterable[float]] = None) -> 'SphericalWaveExpansion':
     """
     Read spherical mode coefficients from TICRA .sph format.
 
@@ -351,7 +375,7 @@ def read_ticra_sph(file_path: Union[str, Path]) -> 'SphericalWaveExpansion':
     """
 
     # Use the new module's reader
-    swe = SphericalWaveExpansion.from_sph_file(str(file_path))
+    swe = SphericalWaveExpansion.from_sph_file(str(file_path), frequencies=frequencies)
 
     return swe
 

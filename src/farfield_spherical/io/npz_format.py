@@ -71,12 +71,24 @@ def save_pattern_npz(pattern, file_path: Union[str, Path], metadata: Optional[Di
         for i, freq in enumerate(swe_frequencies):
             swe_obj = pattern.swe[freq]
             prefix = f'swe_{i}_'
+            q1_coeffs = (
+                swe_obj.Q1_coeffs(freq)
+                if callable(getattr(swe_obj, 'Q1_coeffs', None))
+                else swe_obj.Q1_coeffs
+            )
+            q2_coeffs = (
+                swe_obj.Q2_coeffs(freq)
+                if callable(getattr(swe_obj, 'Q2_coeffs', None))
+                else swe_obj.Q2_coeffs
+            )
+            nmax = swe_obj.NMAX(freq) if callable(getattr(swe_obj, 'NMAX', None)) else swe_obj.NMAX
+            mmax = swe_obj.MMAX(freq) if callable(getattr(swe_obj, 'MMAX', None)) else swe_obj.MMAX
             
             # Convert coefficient dicts to arrays for storage
-            modes = sorted(set(swe_obj.Q1_coeffs.keys()) | set(swe_obj.Q2_coeffs.keys()))
+            modes = sorted(set(q1_coeffs.keys()) | set(q2_coeffs.keys()))
             
-            Q1_array = np.array([swe_obj.Q1_coeffs.get(mode, 0.0) for mode in modes])
-            Q2_array = np.array([swe_obj.Q2_coeffs.get(mode, 0.0) for mode in modes])
+            Q1_array = np.array([q1_coeffs.get(mode, 0.0) for mode in modes])
+            Q2_array = np.array([q2_coeffs.get(mode, 0.0) for mode in modes])
             modes_array = np.array(modes)
             
             save_dict[f'{prefix}Q1_coeffs'] = Q1_array
@@ -85,9 +97,9 @@ def save_pattern_npz(pattern, file_path: Union[str, Path], metadata: Optional[Di
             
             # Save metadata
             swe_meta = {
-                'NMAX': int(swe_obj.NMAX),
-                'MMAX': int(swe_obj.MMAX),
-                'frequency': float(swe_obj.frequency) if swe_obj.frequency else None,
+                'NMAX': int(nmax),
+                'MMAX': int(mmax),
+                'frequency': float(freq),
             }
             
             save_dict[f'{prefix}metadata'] = json.dumps(swe_meta)
