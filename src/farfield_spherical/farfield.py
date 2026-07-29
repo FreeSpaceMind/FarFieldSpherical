@@ -419,7 +419,6 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         # Read SWE coefficients
         swe_data = read_ticra_sph(file_path, frequencies=requested)
 
-<<<<<<< HEAD
         # Create pattern from coefficients
         pattern = create_pattern_from_swe(
             swe_data,
@@ -427,10 +426,6 @@ class FarFieldSpherical(FarFieldOperationsMixin):
             phi_angles,
             frequencies=requested,
         )
-=======
-        # Create pattern from coefficients at the requested frequency
-        pattern = create_pattern_from_swe(swe_data, theta_angles, phi_angles, frequency)
->>>>>>> c7c340610d88a41f1933b27ed57a7c1475165a38
 
         return pattern
 

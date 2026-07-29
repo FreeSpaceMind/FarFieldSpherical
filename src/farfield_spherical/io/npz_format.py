@@ -77,7 +77,6 @@ def save_pattern_npz(pattern, file_path: Union[str, Path], metadata: Optional[Di
         for i, freq in enumerate(swe_frequencies):
             swe_obj = pattern.swe[freq]
             prefix = f'swe_{i}_'
-<<<<<<< HEAD
             q1_coeffs = (
                 swe_obj.Q1_coeffs(freq)
                 if callable(getattr(swe_obj, 'Q1_coeffs', None))
@@ -90,37 +89,21 @@ def save_pattern_npz(pattern, file_path: Union[str, Path], metadata: Optional[Di
             )
             nmax = swe_obj.NMAX(freq) if callable(getattr(swe_obj, 'NMAX', None)) else swe_obj.NMAX
             mmax = swe_obj.MMAX(freq) if callable(getattr(swe_obj, 'MMAX', None)) else swe_obj.MMAX
-            
+
             # Convert coefficient dicts to arrays for storage
             modes = sorted(set(q1_coeffs.keys()) | set(q2_coeffs.keys()))
-            
+
             Q1_array = np.array([q1_coeffs.get(mode, 0.0) for mode in modes])
             Q2_array = np.array([q2_coeffs.get(mode, 0.0) for mode in modes])
-=======
-
-            # Q1_coeffs/Q2_coeffs are callables: swe_obj.Q1_coeffs(freq) -> dict
-            q1_dict = swe_obj.Q1_coeffs(freq)
-            q2_dict = swe_obj.Q2_coeffs(freq)
-            modes = sorted(set(q1_dict.keys()) | set(q2_dict.keys()))
-
-            Q1_array = np.array([q1_dict.get(mode, 0.0) for mode in modes])
-            Q2_array = np.array([q2_dict.get(mode, 0.0) for mode in modes])
->>>>>>> c7c340610d88a41f1933b27ed57a7c1475165a38
             modes_array = np.array(modes)
 
             save_dict[f'{prefix}Q1_coeffs'] = Q1_array
             save_dict[f'{prefix}Q2_coeffs'] = Q2_array
             save_dict[f'{prefix}modes'] = modes_array
 
-            # NMAX/MMAX are callables: swe_obj.NMAX(freq) -> int
             swe_meta = {
-<<<<<<< HEAD
                 'NMAX': int(nmax),
                 'MMAX': int(mmax),
-=======
-                'NMAX': int(swe_obj.NMAX(freq)),
-                'MMAX': int(swe_obj.MMAX(freq)),
->>>>>>> c7c340610d88a41f1933b27ed57a7c1475165a38
                 'frequency': float(freq),
             }
 
