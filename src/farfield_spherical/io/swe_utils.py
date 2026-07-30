@@ -1,6 +1,7 @@
 from typing import Optional, Sequence
 
 import numpy as np
+from swe import SphericalWaveExpansion  # pyright: ignore[reportMissingImports]
 
 from ..farfield import FarFieldSpherical
 
@@ -70,8 +71,6 @@ def create_pattern_from_swe(
     Returns:
         FarFieldSpherical object.
     """
-    _require_swe_available()
-
     if frequencies is not None and frequency is not None:
         raise ValueError("Specify either frequencies or frequency, not both")
     if frequency is not None:
