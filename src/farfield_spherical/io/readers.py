@@ -342,17 +342,8 @@ def read_ticra_sph(file_path: Union[str, Path],
         SphericalWaveExpansion object
     """
 
-<<<<<<< HEAD
     # Use the new module's reader
     swe = SphericalWaveExpansion.from_sph_file(str(file_path), frequencies=frequencies)
-=======
-    if not _SWE_AVAILABLE:
-        raise ImportError(
-            "The 'swe' package is required to read TICRA .sph files. "
-            "Install it with: pip install farfield-spherical[swe]"
-        )
-    swe = SphericalWaveExpansion.from_sph_file(str(file_path))
->>>>>>> c7c340610d88a41f1933b27ed57a7c1475165a38
 
     return swe
 
