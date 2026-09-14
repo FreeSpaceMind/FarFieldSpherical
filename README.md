@@ -214,6 +214,47 @@ peak_dir_db, peak_theta, peak_phi = calculate_directivity(pattern, frequency=1e9
 print(f"Peak directivity: {peak_dir_db:.2f} dBi at theta={peak_theta:.1f}, phi={peak_phi:.1f}")
 ```
 
+### Feed Cross-Polarization Metrics
+
+Feed-level cross-polarization figures over a reflector illumination cone
+`0 <= theta <= theta_e`, as defined in *Cross-Polarization Metrics for a
+Reflector Feed*. All functions work on `e_co` / `e_cx` as currently assigned
+(Ludwig-3 requires polarization `'x'` or `'y'`; anything else logs a warning),
+on a copy of the pattern in sided format, and return xarray objects indexed by
+frequency.
+
+| Function | Quantity |
+|----------|----------|
+| `integrated_xpd(pattern, theta_e)` | `XPD_int = 10 log10 [ ∫∫ |E_co|² sinθ dθ dφ / ∫∫ |E_cx|² sinθ dθ dφ ]` over the cone. Screening gate on total cross-polarized power delivered to the reflector. |
+| `n0_crosspol_level(pattern, theta_e)` | `L0 = 20 log10 ( max|E_co| / max_θ |c_0(θ)| )`, where `c_0(θ) = (1/2π) ∫ E_cx(θ,φ) dφ` is the azimuthally symmetric part of the cross-pol field. Controls system boresight cross-polarization. |
+| `azimuthal_modes(pattern, theta_e, n_max, component)` | Full azimuthal spectrum `c_n(θ) = (1/2π) ∫ E e^{-jnφ} dφ` via FFT along φ, with the power in each `|n|` over the cone (`n ≥ 1` sums the `+n` and `−n` bins) relative to the total power of the component in the cone. |
+| `point_xpd(pattern, theta_e)` | `xpd_worst_db`: minimum over the cone of `20 log10(|E_co|/|E_cx|)` at the same angle. `xpol_peak_db`: `20 log10(max|E_co| / max_cone|E_cx|)`. For comparison only. |
+| `edge_taper(pattern, theta_e)` | φ-averaged `|E_co|` at the θ sample nearest `theta_e`, relative to peak, in dB. Sanity check on the feed / illumination-angle pairing. |
+| `crosspol_report(pattern, theta_e, n_max=6)` | All of the above in one Dataset. Also available as `pattern.crosspol_report(theta_e)`. |
+| `check_requirements(report, xpd_int_min_db, n0_min_db, bands_hz)` | Adds per-frequency margins and pass/fail flags, plus `in_band`; out-of-band frequencies are reported but excluded from `attrs['all_pass']`. |
+
+Quadrature is rectangular with weights `sinθ Δθ Δφ`, as in the requirement
+text. The φ grid must be uniform and cover a full 360° exactly once
+(a duplicated endpoint such as −180/+180 or 0/360 is dropped); θ spacing must
+be uniform inside the cone. A `ValueError` is raised otherwise, so a
+half-plane measurement (φ 0–180 in sided form) cannot be evaluated.
+
+```python
+from farfield_spherical import read_ffd, crosspol_report, check_requirements
+
+pattern = read_ffd("feed.ffd")
+report = crosspol_report(pattern, theta_e=35.0)
+result = check_requirements(report, xpd_int_min_db=20, n0_min_db=40,
+                            bands_hz=[(8e9, 11e9), (13e9, 15e9)])
+print(result[["xpd_int_db", "n0_level_db", "in_band"]].to_dataframe())
+print("PASS" if result.attrs["all_pass"] else "FAIL")
+```
+
+Note that `n0_level_db` on a horn-only, azimuthally symmetric simulation sits
+at the simulation's numerical floor (typically 65–80 dB) and is not
+representative of assembly performance; the n = 0 requirement is meaningful
+for measured feeds or for models that include the asymmetric structure.
+
 ## Utilities
 
 ```python

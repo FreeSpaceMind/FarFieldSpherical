@@ -8,6 +8,7 @@ TEST_DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
 
 CUT_FILE = os.path.join(TEST_DATA_DIR, 'example.cut')
 SPH_FILE = os.path.join(TEST_DATA_DIR, 'example.sph')
+FFD_FILE = os.path.join(TEST_DATA_DIR, 'X5_horn_1.ffd')
 
 requires_cut = pytest.mark.skipif(
     not os.path.exists(CUT_FILE),
@@ -16,6 +17,10 @@ requires_cut = pytest.mark.skipif(
 requires_sph = pytest.mark.skipif(
     not os.path.exists(SPH_FILE),
     reason='example.sph not found in tests/data/'
+)
+requires_ffd = pytest.mark.skipif(
+    not os.path.exists(FFD_FILE),
+    reason='X5_horn_1.ffd not found in tests/data/'
 )
 
 try:

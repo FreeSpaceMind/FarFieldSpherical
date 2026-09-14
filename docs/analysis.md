@@ -143,6 +143,86 @@ $$AR_{dB} = 20\log_{10}\left(\frac{10^{X_{dB}/20} + 1}{10^{X_{dB}/20} - 1}\right
 
 For example, $X_{dB} = 20\;dB$ (cross-pol 20 dB below co-pol) gives $AR \approx 1.7\;dB$.
 
+## Feed Cross-Polarization Metrics
+
+These functions evaluate the cross-polarization requirements placed on a reflector feed, as defined in *Cross-Polarization Metrics for a Reflector Feed*. They live in `farfield_spherical.crosspol` and are exported from the package root; `crosspol_report` is also available as a method on `FarFieldSpherical`.
+
+### Domain and Conventions
+
+All quantities are evaluated over the illumination cone
+
+$$0 \le \theta \le \theta_e, \qquad 0 \le \phi < 360^\circ$$
+
+where $\theta_e$ is the half-angle subtended by the reflector at the feed. The fields used are `e_co` and `e_cx` as currently assigned on the pattern. Ludwig-3 co/cross definitions require the pattern polarization to be `'x'` or `'y'`; any other polarization is accepted with a logged warning, since the integrals are well defined for any co/cross pair.
+
+Computation is done on a copy of the pattern transformed to sided format (the caller's pattern is never modified). Quadrature is rectangular, matching the requirement text:
+
+$$\iint f \, d\Omega \approx \sum_{i,k} f(\theta_i, \phi_k)\, \sin\theta_i \, \Delta\theta \, \Delta\phi$$
+
+Requirements on the grid:
+
+- $\phi$ must be uniformly spaced and cover a full $360^\circ$ exactly once. A duplicated endpoint ($-180/+180$ or $0/360$) is dropped before integrating. Anything less than full coverage raises `ValueError`, so a half-plane measurement cannot be evaluated.
+- $\theta$ must be uniformly spaced inside the cone, and $\theta_e$ must lie inside the pattern's $\theta$ range.
+
+Because every metric is a ratio, absolute field scaling (for example the $1/\sqrt{60}$ applied by `read_ffd`) has no effect.
+
+### Integrated XPD
+
+$$\text{XPD}_\text{int} = 10\log_{10}\left[\frac{\iint_{\text{cone}} |E_\text{co}|^2 \sin\theta\, d\theta\, d\phi}{\iint_{\text{cone}} |E_\text{cx}|^2 \sin\theta\, d\theta\, d\phi}\right]$$
+
+Ratio of co- to cross-polarized power delivered to the reflector. This is the screening gate: it bounds the total cross-polarized power in the aperture regardless of how it is distributed in azimuth. Computed by `integrated_xpd(pattern, theta_e)`; returned as `xpd_int_db`.
+
+### Azimuthal Mode Content
+
+The cross-polarized field is decomposed in azimuth:
+
+$$c_n(\theta) = \frac{1}{2\pi}\int_0^{2\pi} E_\text{cx}(\theta, \phi)\, e^{-jn\phi}\, d\phi$$
+
+which on a uniform $\phi$ grid equals the FFT along $\phi$ divided by the number of samples. The power carried by each order over the cone is
+
+$$P_n = 2\pi \int_0^{\theta_e} |c_n(\theta)|^2 \sin\theta\, d\theta$$
+
+For $n \ge 1$ the reported mode power is the sum of the $+n$ and $-n$ bins; $n = 0$ is the single DC bin. `mode_power_rel_db` expresses each $P_n$ relative to the total cross-polarized power in the cone (by Parseval, the sum over all bins), so it does not depend on the number of orders retained. Computed by `azimuthal_modes(pattern, theta_e, n_max, component)`, with `component` either `'e_cx'` (default) or `'e_co'`.
+
+For a well-behaved linearly polarized feed, essentially all cross-pol power is in $n = 2$ (the $\cos 2\phi$ Ludwig-3 term), which integrates to zero on boresight of a symmetric reflector and therefore does not set the system boresight cross-polarization.
+
+### n = 0 Cross-Polarization Level
+
+$$L_0 = 20\log_{10}\left(\frac{\max|E_\text{co}|}{\max_{\theta \le \theta_e} |c_0(\theta)|}\right)$$
+
+The azimuthally symmetric cross-pol component is the one that survives the reflector's azimuthal integration and appears on the system boresight. The peak co-polarized amplitude is taken over the whole pattern, not just the cone. Larger is better. Computed by `n0_crosspol_level(pattern, theta_e)`; returned as `n0_level_db`.
+
+On a horn-only, azimuthally symmetric simulation this value sits at the numerical floor of the solver (typically 65–80 dB) and is not representative of the assembled feed; the requirement is meaningful for measured feeds or models that include the asymmetric structure around the horn.
+
+### Supporting Quantities
+
+| Name | Definition | Purpose |
+|------|------------|---------|
+| `xpd_worst_db` | $\min_{\text{cone}} 20\log_{10}\left(\lvert E_\text{co}\rvert / \lvert E_\text{cx}\rvert\right)$ at the same angle | Conventional point XPD; pessimistic because it is dominated by the cone edge where co-pol has rolled off |
+| `xpol_peak_db` | $20\log_{10}\left(\max\lvert E_\text{co}\rvert / \max_{\text{cone}}\lvert E_\text{cx}\rvert\right)$ | Peak-referenced cross-pol, the number usually quoted on a datasheet |
+| `edge_taper_db` | $20\log_{10}\left(\overline{\lvert E_\text{co}(\theta_e, \phi)\rvert}^{\,\phi} / \max\lvert E_\text{co}\rvert\right)$ | Confirms the feed and $\theta_e$ are a sensible pairing (about $-10$ to $-13$ dB for a typical design) |
+
+`point_xpd` returns the first two; `edge_taper` returns the third using the $\theta$ sample nearest $\theta_e$ (reported in `attrs['theta_actual_deg']`).
+
+### Report and Requirement Check
+
+`crosspol_report(pattern, theta_e, n_max=6)` returns one Dataset with `xpd_int_db`, `n0_level_db`, `xpd_worst_db`, `xpol_peak_db`, `edge_taper_db` (dims `frequency`) and `mode_power_rel_db` (dims `frequency, n`).
+
+`check_requirements(report, xpd_int_min_db=None, n0_min_db=None, bands_hz=None)` returns a copy of the report with, for each requirement given, a per-frequency margin and pass flag, plus an `in_band` flag when `bands_hz` (a list of `(lo, hi)` in Hz) is supplied. Out-of-band frequencies are still reported but excluded from `attrs['all_pass']` and from the worst-case attributes `worst_xpd_int_in_band_db` and `worst_n0_in_band_db`.
+
+```python
+from farfield_spherical import read_ffd, crosspol_report, check_requirements
+
+pattern = read_ffd("feed.ffd")
+report = crosspol_report(pattern, theta_e=35.0)
+result = check_requirements(report, xpd_int_min_db=20, n0_min_db=40,
+                            bands_hz=[(8e9, 11e9), (13e9, 15e9)])
+print(result[["xpd_int_db", "n0_level_db", "in_band"]].to_dataframe())
+print("PASS" if result.attrs["all_pass"] else "FAIL")
+```
+
+---
+
 ## Pattern Averaging
 
 Computes a weighted average of $N$ patterns that share identical angular and frequency grids.

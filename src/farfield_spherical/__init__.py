@@ -49,6 +49,17 @@ from .analysis import (
     detect_coordinate_format
 )
 
+# Feed cross-polarization metrics
+from .crosspol import (
+    integrated_xpd,
+    azimuthal_modes,
+    n0_crosspol_level,
+    point_xpd,
+    edge_taper,
+    crosspol_report,
+    check_requirements
+)
+
 # Utilities
 from .utilities import (
     find_nearest,
@@ -99,6 +110,13 @@ __all__ = [
     'get_axial_ratio',
     'calculate_directivity',
     'detect_coordinate_format',
+    'integrated_xpd',
+    'azimuthal_modes',
+    'n0_crosspol_level',
+    'point_xpd',
+    'edge_taper',
+    'crosspol_report',
+    'check_requirements',
     'find_nearest',
     'frequency_to_wavelength',
     'wavelength_to_frequency',

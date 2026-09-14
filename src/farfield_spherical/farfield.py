@@ -782,6 +782,22 @@ class FarFieldSpherical(FarFieldOperationsMixin):
 
         return swe_obj
     
+    def crosspol_report(self, theta_e: float, n_max: int = 6) -> xr.Dataset:
+        """
+        Feed cross-polarization metrics over the illumination cone theta <= theta_e.
+
+        See farfield_spherical.crosspol.crosspol_report for the definitions.
+
+        Args:
+            theta_e: Illumination half-angle in degrees
+            n_max: Highest azimuthal order retained in the mode spectrum
+
+        Returns:
+            xr.Dataset indexed by frequency
+        """
+        from .crosspol import crosspol_report
+        return crosspol_report(self, theta_e, n_max)
+
     def find_beamwidth_at_db_level(self, db_level: float, 
                                 frequency: Optional[float] = None,
                                 phi_cut: float = 0.0) -> float:
