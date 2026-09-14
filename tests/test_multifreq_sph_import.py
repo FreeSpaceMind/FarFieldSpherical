@@ -4,7 +4,8 @@ import pytest
 from farfield_spherical import FarFieldSpherical
 from farfield_spherical.io.readers import scan_sph_frequencies
 from farfield_spherical.io.swe_utils import create_pattern_from_swe
-from swe import SphericalWaveExpansion
+swe_module = pytest.importorskip('swe', reason='swe package not installed')
+SphericalWaveExpansion = swe_module.SphericalWaveExpansion
 
 
 def _tiny_swe(frequencies=(8e9, 10e9)):

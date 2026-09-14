@@ -35,30 +35,30 @@ This format is more intuitive for antenna pattern visualization because the patt
 
 ### Conversion Between Formats
 
+`transform_coordinates(format)` rearranges the existing samples without interpolation. It first normalises $\phi$ into $[0°, 360°)$, sorts the cuts, and merges duplicates (a grid with both $-180°$ and $+180°$, or both $0°$ and $360°$, keeps one copy of the repeated cut).
+
+**The pairing rule.** A direction is described twice on a full sphere: the sided point $(\theta_0, \phi_0 + 180°)$ and the central point $(-\theta_0, \phi_0)$ are the same physical direction. The spherical unit vectors reverse across boresight,
+
+$$\hat{\theta}(\theta, \phi + 180°) = -\hat{\theta}(-\theta, \phi), \qquad \hat{\phi}(\theta, \phi + 180°) = -\hat{\phi}(-\theta, \phi)$$
+
+so both field components are negated when a sample is moved from one description to the other. This applies to the shared $\theta = 0°$ sample as well: the boresight row of the $\phi + 180°$ cut is $-E(0°, \phi)$, which keeps each cut continuous through boresight (without the flip, Ludwig-3 co-pol shows a $180°$ phase jump at $\theta = 0°$ in the $\phi \ge 180°$ cuts).
+
+Cuts are paired by their $\phi$ **values**, not by position in the array, with a tolerance of $10^{-6}°$. Positive-$\theta$ (directly sampled) data takes precedence when a direct cut and a mirrored cut land on the same output cut.
+
 **Sided to Central:**
 
-The conversion maps data from the $(\theta, \phi)$ grid with $\theta \in [0°, 180°]$ and $\phi \in [0°, 360°]$ onto a grid with $\theta \in [-180°, 180°]$ and $\phi \in [0°, 180°]$.
-
-For the front hemisphere ($\theta \geq 0°$ in central format):
-- Data is taken directly from the sided format at the same $(\theta, \phi)$
-
-For the back hemisphere ($\theta < 0°$ in central format):
-- The negative-$\theta$ data at azimuth $\phi$ comes from the sided-format point at $(\theta_{sided}, \phi + 180°)$
-- Specifically, a central-format point at $(-\theta_0, \phi_0)$ maps to the sided-format point at $(\theta_0, \phi_0 + 180°)$
-- The field components must be negated: $E'_\theta = -E_\theta$, $E'_\phi = -E_\phi$
-
-**Why the fields are negated:**
-
-A measurement at direction $(\theta, \phi + 180°)$ in sided format observes the same physical point on the sphere as $(-\theta, \phi)$ in central format. However, the spherical unit vectors $\hat{\theta}$ and $\hat{\phi}$ both reverse sign at the antipodal azimuth:
-
-$$\hat{\theta}(\theta, \phi + 180°) = -\hat{\theta}(-\theta, \phi)$$
-$$\hat{\phi}(\theta, \phi + 180°) = -\hat{\phi}(-\theta, \phi)$$
-
-Therefore the field components, which are projections onto these unit vectors, must be negated to represent the same physical electric field.
+- The cut at $\phi < 180°$ supplies the $\theta \ge 0°$ half of the central cut at $\phi$.
+- The cut at $\phi \ge 180°$ supplies the $\theta \le 0°$ half of the central cut at $\phi - 180°$, flipped in $\theta$ and negated.
+- $\theta$ must start at $0°$; the output grid is $[-\theta_{max}, \theta_{max}]$.
+- A cut whose partner is absent (for example a $\phi$ step that does not divide $180°$, or a half-plane measurement) is still placed on its own central $\phi$; the missing half is zero-filled and a warning is logged.
 
 **Central to Sided:**
 
-The inverse transformation extracts the front hemisphere directly and reconstructs the back hemisphere by reversing the negation and azimuthal offset.
+- The $\theta \ge 0°$ half of every cut goes to the sided cut at the same $\phi$.
+- The $\theta < 0°$ half goes to the sided cut at $\phi + 180°$ (mod $360°$), flipped and negated, matched to the positive $\theta$ grid by value. An asymmetric $\theta$ range (say $-90°$ to $180°$) therefore leaves the far side of the mirrored cuts zero-filled, with a warning.
+- Central input whose $\phi$ range is not $[0°, 180°)$ is handled by the same rule: cuts at $\phi \ge 180°$, or at negative $\phi$, are folded into range first.
+
+**Requesting the format the data is already in** is not a no-op: $\phi$ is still normalised and deduplicated, and central data with cuts outside $[0°, 180°)$ is folded into that range.
 
 ### Format Detection
 

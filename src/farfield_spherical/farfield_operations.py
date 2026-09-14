@@ -7,6 +7,7 @@ import numpy as np
 import xarray as xr
 from typing import Tuple, Union, Optional, List, Any, Callable
 from scipy.interpolate import interp1d
+import logging
 
 from .utilities import lightspeed, frequency_to_wavelength, find_nearest
 from .polarization import polarization_tp2xy, polarization_tp2rl, polarization_xy2tp
@@ -15,6 +16,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .farfield import FarFieldSpherical
+
+logger = logging.getLogger(__name__)
 
 class FarFieldOperationsMixin:
     """Mixin class providing operations for far-field patterns."""
@@ -293,91 +296,212 @@ class FarFieldOperationsMixin:
                 'scale_factor': scale_factor
             })
 
-    def rotate(self, alpha: float, beta: float, gamma: float) -> None:
+    def rotate(self, alpha: float, beta: float, gamma: float,
+               method: str = 'linear') -> None:
         """
-        Rotate the pattern using Euler angles.
+        Rotate the pattern rigidly, as if the antenna itself were rotated.
+
+        The rotation is R = R_y(alpha) . R_x(beta) . R_z(gamma), applied in the
+        order roll (gamma, about z), elevation (beta, about x), azimuth (alpha,
+        about y), with the matrices defined in
+        ``pattern_operations.isometric_rotation``. The field at a direction
+        r' after rotation is the rotated field the antenna radiated toward
+        R^-1 r' before rotation:
+
+            E'(r') = R . E(R^-1 r')
+
+        so both the sampling direction and the field vector are rotated. The
+        original boresight (+z) ends up at direction R.z, i.e.
+
+            theta_0 = arccos(cos(alpha) cos(beta))
+            phi_0   = atan2(-sin(beta), -sin(alpha) cos(beta))
+
+        With the documented matrices a positive ``alpha`` tilts the boresight
+        toward phi = 180 deg and a positive ``beta`` toward phi = 270 deg;
+        negate the angles for the opposite sense.
+
+        The result is sampled on the pattern's existing (theta, phi) grid, in
+        its existing coordinate format, by interpolating the Cartesian
+        components of the original field over the sphere. Directions that fall
+        outside the original angular coverage (partial-sphere patterns) are
+        set to zero and a warning is logged.
 
         Args:
-            alpha: First rotation angle in degrees (azimuth, y-axis)
-            beta: Second rotation angle in degrees (elevation, x-axis)
-            gamma: Third rotation angle in degrees (roll, z-axis)
+            alpha: Azimuth rotation about the y-axis, degrees
+            beta: Elevation rotation about the x-axis, degrees
+            gamma: Roll about the z-axis, degrees
+            method: Interpolation method passed to
+                ``scipy.interpolate.RegularGridInterpolator``
+                ('linear', 'nearest', 'slinear', 'cubic', ...)
 
         Raises:
-            NotImplementedError: This method is not yet functional. The underlying
-                rotation logic requires interpolation of field vectors onto a rotated
-                spherical grid, which is not yet implemented. Use the standalone
-                ``isometric_rotation`` and ``transform_uvw2tp`` functions from
-                ``pattern_operations`` as building blocks for a custom implementation.
+            NotImplementedError: If the pattern has non-uniform theta grids
+            ValueError: If the pattern has fewer than two theta or phi samples
         """
-        raise NotImplementedError(
-            "rotate() is not yet implemented. The isometric_rotation helper in "
-            "pattern_operations.py computes rotated direction cosines, but the "
-            "subsequent field interpolation onto the rotated grid is missing."
-        )
+        from scipy.interpolate import RegularGridInterpolator
+        from .pattern_operations import _rotation_matrix
+
+        self._require_uniform_theta('rotate')
+
+        R = _rotation_matrix(alpha, beta, gamma)
+        if np.allclose(R, np.eye(3)):
+            return
+
+        # --- Source: a sided, phi-normalised copy of the current data --------
+        src = self.copy()
+        src.transform_coordinates('sided', _preserve_polarization=True)
+        th_s = np.asarray(src.theta_angles, dtype=float)
+        ph_s = np.asarray(src.phi_angles, dtype=float)
+        if th_s.size < 2 or ph_s.size < 2:
+            raise ValueError("rotate requires at least two theta and two phi samples.")
+        es_theta = np.asarray(src.data.e_theta.values, dtype=np.complex128)
+        es_phi = np.asarray(src.data.e_phi.values, dtype=np.complex128)
+
+        # Cartesian field components on the source grid: (freq, theta, phi, 3)
+        th_hat_s, ph_hat_s = self._spherical_basis(th_s, ph_s)
+        e_cart = (es_theta[..., None] * th_hat_s[None] + es_phi[..., None] * ph_hat_s[None])
+
+        # Periodic padding in phi when the grid covers the full circle, so the
+        # interpolator can wrap across the phi seam.
+        dphi = np.diff(ph_s)
+        full_circle = (ph_s.size > 1 and np.allclose(dphi, dphi[0], atol=1e-6)
+                       and np.isclose(ph_s.size * dphi[0], 360.0, atol=1e-6))
+        ph_grid = ph_s
+        if full_circle:
+            ph_grid = np.append(ph_s, ph_s[0] + 360.0)
+            e_cart = np.concatenate([e_cart, e_cart[:, :, :1, :]], axis=2)
+
+        # Interpolate real and imaginary parts as trailing dimensions:
+        # values shape (theta, phi, freq, 3, 2)
+        values = np.stack([e_cart.real, e_cart.imag], axis=-1).transpose(1, 2, 0, 3, 4)
+        interp = RegularGridInterpolator((th_s, ph_grid), values, method=method,
+                                         bounds_error=False, fill_value=np.nan)
+
+        # --- Target: the pattern's own grid, in its own format ---------------
+        th_t = np.asarray(self.theta_angles, dtype=float)
+        ph_t = np.asarray(self.phi_angles, dtype=float)
+        r_hat_t = self._direction(th_t, ph_t)                  # (theta, phi, 3)
+        th_hat_t, ph_hat_t = self._spherical_basis(th_t, ph_t)
+
+        # Where did the antenna radiate toward r' before rotation? R^-1 r'.
+        r_src = r_hat_t @ R                                     # (R^T r')^T
+        th_src = np.degrees(np.arccos(np.clip(r_src[..., 2], -1.0, 1.0)))
+        ph_src = np.degrees(np.arctan2(r_src[..., 1], r_src[..., 0]))
+        ph_src = ph_grid[0] + np.mod(ph_src - ph_grid[0], 360.0)
+        if full_circle:
+            # Values within tolerance of the padded end belong to the seam
+            ph_src = np.where(ph_src > ph_grid[-1], ph_grid[-1], ph_src)
+
+        sampled = interp(np.stack([th_src, ph_src], axis=-1))   # (theta, phi, freq, 3, 2)
+        missing = np.isnan(sampled[..., 0, 0, 0])
+        if missing.any():
+            logger.warning(
+                "rotate: %d of %d directions fall outside the pattern's angular "
+                "coverage and were set to zero.", int(missing.sum()), missing.size)
+            sampled = np.nan_to_num(sampled)
+        e_src = sampled[..., 0] + 1j * sampled[..., 1]           # (theta, phi, freq, 3)
+
+        # Rotate the field vectors and project onto the target basis
+        e_rot = e_src @ R.T                                     # (theta, phi, freq, 3)
+        e_theta_new = np.einsum('tpfc,tpc->ftp', e_rot, th_hat_t)
+        e_phi_new = np.einsum('tpfc,tpc->ftp', e_rot, ph_hat_t)
+
+        self.data['e_theta'].values = e_theta_new.astype(np.complex64)
+        self.data['e_phi'].values = e_phi_new.astype(np.complex64)
+        self.assign_polarization(self.polarization)
+        self.clear_cache()
+
+        if hasattr(self, 'metadata') and self.metadata is not None:
+            self.metadata.setdefault('operations', []).append({
+                'type': 'rotate',
+                'alpha': float(alpha), 'beta': float(beta), 'gamma': float(gamma),
+                'method': method,
+            })
+
+    @staticmethod
+    def _direction(theta_deg: np.ndarray, phi_deg: np.ndarray) -> np.ndarray:
+        """Unit direction vectors r_hat on a (theta, phi) grid, shape (theta, phi, 3).
+
+        Valid for negative theta (central format), where sin(theta) < 0 places
+        the direction on the phi + 180 side.
+        """
+        th = np.radians(theta_deg)[:, None]
+        ph = np.radians(phi_deg)[None, :]
+        return np.stack([np.sin(th) * np.cos(ph),
+                         np.sin(th) * np.sin(ph),
+                         np.cos(th) * np.ones_like(ph)], axis=-1)
+
+    @staticmethod
+    def _spherical_basis(theta_deg: np.ndarray, phi_deg: np.ndarray):
+        """theta_hat and phi_hat unit vectors on a (theta, phi) grid, each (theta, phi, 3).
+
+        Uses the analytic expressions, which for negative theta give exactly the
+        basis the central-format field components are referred to.
+        """
+        th = np.radians(theta_deg)[:, None]
+        ph = np.radians(phi_deg)[None, :]
+        ones = np.ones_like(th * ph)
+        th_hat = np.stack([np.cos(th) * np.cos(ph),
+                           np.cos(th) * np.sin(ph),
+                           -np.sin(th) * ones], axis=-1)
+        ph_hat = np.stack([-np.sin(ph) * ones,
+                           np.cos(ph) * ones,
+                           np.zeros_like(ones)], axis=-1)
+        return th_hat, ph_hat
 
     def unwrap_phase(self, component: str = 'e_co', axis: int = 1) -> np.ndarray:
         """
         Unwrap phase discontinuities for a component.
-        
+
         Args:
             component: Field component to unwrap
             axis: Axis along which to unwrap (default: 1 for theta)
-            
+
         Returns:
             Unwrapped phase in radians
         """
         from .pattern_operations import unwrap_phase
-        
+
         field = self.data[component].values
         phase = np.angle(field)
-        
+
         return unwrap_phase(phase, axis=axis)
 
     def mirror_pattern(self) -> None:
         """
         Mirror the pattern across the theta=0 plane.
-        
-        This function reflects the pattern data across the theta=0 plane,
-        creating a symmetric pattern. Useful for completing partial patterns
-        from measurements.
-        
+
+        Copies the theta > 0 data of every phi cut onto the matching theta < 0
+        samples of the same cut, with E_theta negated and E_phi unchanged.
+        Useful for completing a central-format pattern that was only measured
+        on one side of boresight.
+
         Raises:
-            ValueError: If pattern doesn't include theta=0
+            ValueError: If the pattern is not in central format, does not
+                include theta=0, or its theta grid is not symmetric about 0
         """
-        # Check if theta=0 exists
-        if 0 not in self.theta_angles:
+        self._require_uniform_theta('mirror_pattern')
+        theta = np.asarray(self.theta_angles, dtype=float)
+        if theta.min() >= 0:
+            raise ValueError("mirror_pattern requires a central-format pattern (negative theta)")
+        if not np.any(np.isclose(theta, 0.0, atol=1e-6)):
             raise ValueError("Pattern must include theta=0 to mirror")
-        
-        # Find theta=0 index
-        theta_zero_idx = np.where(self.theta_angles == 0)[0][0]
-        
-        # Get positive and negative theta regions
-        positive_theta_mask = self.theta_angles >= 0
-        negative_theta_mask = self.theta_angles < 0
-        
-        # Mirror positive side to negative side
-        for freq_idx in range(len(self.frequencies)):
-            # E_theta changes sign when mirroring
-            self.data.e_theta.values[freq_idx, negative_theta_mask, :] = \
-                -self.data.e_theta.values[freq_idx, positive_theta_mask[::-1], :]
-            
-            # E_phi stays the same
-            self.data.e_phi.values[freq_idx, negative_theta_mask, :] = \
-                self.data.e_phi.values[freq_idx, positive_theta_mask[::-1], :]
-        
-        # Recompute co/cx polarization
+
+        neg = np.where(theta < -1e-6)[0]
+        rows = self._match_rows(-theta[neg], theta)
+        if np.any(rows < 0):
+            raise ValueError("mirror_pattern requires a theta grid symmetric about 0")
+
+        e_theta = self.data.e_theta.values
+        e_phi = self.data.e_phi.values
+        e_theta[:, neg, :] = -e_theta[:, rows, :]
+        e_phi[:, neg, :] = e_phi[:, rows, :]
+
         self.assign_polarization(self.polarization)
-        
-        # Clear cache
         self.clear_cache()
-        
-        # Update metadata
+
         if hasattr(self, 'metadata') and self.metadata is not None:
-            if 'operations' not in self.metadata:
-                self.metadata['operations'] = []
-            self.metadata['operations'].append({
-                'type': 'mirror_pattern'
-            })
+            self.metadata.setdefault('operations', []).append({'type': 'mirror_pattern'})
 
     def interpolate_frequency(self, new_frequencies: np.ndarray,
                             kind: str = 'linear') -> 'FarFieldSpherical':
@@ -430,6 +554,182 @@ class FarFieldOperationsMixin:
             metadata={'source': 'interpolated', 'original_metadata': self.metadata}
         )
     
+    # ------------------------------------------------------------------
+    # Coordinate-format transforms
+    # ------------------------------------------------------------------
+
+    _ANGLE_TOL = 1e-6
+
+    @classmethod
+    def _normalize_phi(cls, phi: np.ndarray, *fields: np.ndarray):
+        """
+        Map phi into [0, 360), sort ascending and merge duplicate cuts.
+
+        A cut duplicated after wrapping (for example -180 and +180, or 0 and
+        360) keeps its first occurrence. ``fields`` are (frequency, theta, phi)
+        arrays reordered alongside phi.
+        """
+        phi = np.asarray(phi, dtype=float)
+        phi_mod = np.mod(phi, 360.0)
+        phi_mod = np.where(np.isclose(phi_mod, 360.0, atol=cls._ANGLE_TOL), 0.0, phi_mod)
+        order = np.argsort(phi_mod, kind='stable')
+        phi_sorted = phi_mod[order]
+        keep = np.ones(len(phi_sorted), dtype=bool)
+        keep[1:] = ~np.isclose(np.diff(phi_sorted), 0.0, atol=cls._ANGLE_TOL)
+        idx = order[keep]
+        return phi_sorted[keep], [f[:, :, idx] for f in fields]
+
+    @classmethod
+    def _match_rows(cls, values: np.ndarray, grid: np.ndarray) -> np.ndarray:
+        """Index in ascending ``grid`` of each value (within tolerance), or -1."""
+        values = np.asarray(values, dtype=float)
+        grid = np.asarray(grid, dtype=float)
+        result = np.full(values.shape, -1, dtype=int)
+        if grid.size == 0:
+            return result
+        pos = np.clip(np.searchsorted(grid, values), 0, grid.size - 1)
+        for cand in (pos, np.clip(pos - 1, 0, grid.size - 1)):
+            hit = (result < 0) & np.isclose(grid[cand], values, atol=cls._ANGLE_TOL)
+            result[hit] = cand[hit]
+        return result
+
+    @classmethod
+    def _cut_key(cls, keys: List[float], value: float) -> float:
+        """Return the existing key within tolerance of ``value``, else ``value`` itself."""
+        for k in keys:
+            if abs(k - value) <= cls._ANGLE_TOL:
+                return k
+        return value
+
+    @classmethod
+    def _regroup_cuts(cls, n_freq: int, n_theta: int, placements):
+        """
+        Assemble phi cuts from a list of placements.
+
+        Each placement is ``(phi, rows, e_theta, e_phi)`` with ``rows`` the
+        target theta indices and the fields shaped (frequency, len(rows)).
+        Later placements overwrite earlier ones on the rows they cover.
+
+        Returns (phi, e_theta, e_phi, filled) sorted by phi, where ``filled``
+        is a (theta, phi) boolean mask of rows that received data.
+        """
+        keys: List[float] = []
+        cuts = {}
+        for phi_c, rows, et, ep in placements:
+            phi_c = 0.0 if np.isclose(phi_c, 360.0, atol=cls._ANGLE_TOL) else float(phi_c)
+            key = cls._cut_key(keys, phi_c)
+            if key not in cuts:
+                keys.append(key)
+                cuts[key] = (np.zeros((n_freq, n_theta), dtype=np.complex64),
+                             np.zeros((n_freq, n_theta), dtype=np.complex64),
+                             np.zeros(n_theta, dtype=bool))
+            c_et, c_ep, c_ok = cuts[key]
+            c_et[:, rows] = et
+            c_ep[:, rows] = ep
+            c_ok[rows] = True
+
+        keys.sort()
+        phi_out = np.array(keys, dtype=float)
+        e_theta = np.stack([cuts[k][0] for k in keys], axis=2)
+        e_phi = np.stack([cuts[k][1] for k in keys], axis=2)
+        filled = np.stack([cuts[k][2] for k in keys], axis=1)
+        return phi_out, e_theta, e_phi, filled
+
+    def _central_to_sided(self, theta, phi, e_theta, e_phi):
+        """Central (theta +/-, phi 0..180) -> sided (theta >= 0, phi 0..360)."""
+        n_freq = e_theta.shape[0]
+        pos = theta >= -self._ANGLE_TOL
+        new_theta = theta[pos].copy()
+        if np.isclose(new_theta[0], 0.0, atol=self._ANGLE_TOL):
+            new_theta[0] = 0.0
+        n_theta = len(new_theta)
+
+        neg_idx = np.where(~pos)[0][::-1]                # ascending |theta|
+        neg_rows = self._match_rows(-theta[neg_idx], new_theta)
+        valid = neg_rows >= 0
+        if not valid.all():
+            logger.warning(
+                "transform_coordinates: %d negative-theta samples have no matching "
+                "positive-theta sample and were dropped.", int((~valid).sum()))
+        neg_idx, neg_rows = neg_idx[valid], neg_rows[valid]
+        has_zero = new_theta[0] == 0.0
+
+        placements = []
+        # Mirrored half first: theta < 0 at phi maps to theta > 0 at phi + 180,
+        # with both spherical components negated. The boresight sample is shared
+        # and gets the same sign flip so the cut is continuous through theta = 0.
+        for j, phi_c in enumerate(phi):
+            rows, et, ep = neg_rows, -e_theta[:, neg_idx, j], -e_phi[:, neg_idx, j]
+            if has_zero:
+                rows = np.concatenate([[0], rows])
+                et = np.concatenate([-e_theta[:, pos, j][:, :1], et], axis=1)
+                ep = np.concatenate([-e_phi[:, pos, j][:, :1], ep], axis=1)
+            placements.append((phi_c + 180.0 if phi_c < 180.0 else phi_c - 180.0, rows, et, ep))
+        # Direct half last so measured data wins where both exist
+        all_rows = np.arange(n_theta)
+        for j, phi_c in enumerate(phi):
+            placements.append((phi_c, all_rows, e_theta[:, pos, j], e_phi[:, pos, j]))
+
+        new_phi, new_e_theta, new_e_phi, filled = self._regroup_cuts(n_freq, n_theta, placements)
+        return new_theta, new_phi, new_e_theta, new_e_phi, filled
+
+    def _sided_to_central(self, theta, phi, e_theta, e_phi):
+        """Sided (theta 0..180, phi 0..360) -> central (theta +/-, phi 0..180)."""
+        n_freq = e_theta.shape[0]
+        if theta[0] > self._ANGLE_TOL:
+            raise ValueError("Input theta must start at 0 when transforming to central")
+        theta = theta.copy()
+        theta[0] = 0.0
+        n_pos = len(theta)
+        new_theta = np.concatenate((-theta[1:][::-1], theta))
+        n_theta = len(new_theta)
+        neg_rows = np.arange(n_pos - 1)                  # rows for -theta[1:], flipped
+        pos_rows = np.arange(n_pos - 1, n_theta)
+
+        placements = []
+        # Cuts at phi >= 180 supply the negative-theta half of the cut at phi - 180
+        for j, phi_c in enumerate(phi):
+            if phi_c >= 180.0 - self._ANGLE_TOL:
+                rows = np.concatenate([neg_rows, [n_pos - 1]])
+                et = np.concatenate([-e_theta[:, 1:, j][:, ::-1], -e_theta[:, :1, j]], axis=1)
+                ep = np.concatenate([-e_phi[:, 1:, j][:, ::-1], -e_phi[:, :1, j]], axis=1)
+                placements.append((phi_c - 180.0, rows, et, ep))
+        for j, phi_c in enumerate(phi):
+            if phi_c < 180.0 - self._ANGLE_TOL:
+                placements.append((phi_c, pos_rows, e_theta[:, :, j], e_phi[:, :, j]))
+
+        new_phi, new_e_theta, new_e_phi, filled = self._regroup_cuts(n_freq, n_theta, placements)
+        return new_theta, new_phi, new_e_theta, new_e_phi, filled
+
+    def _canonicalize_central(self, theta, phi, e_theta, e_phi):
+        """Central input: fold any cut with phi outside [0, 180) back into range."""
+        n_freq, n_theta = e_theta.shape[0], len(theta)
+        high = phi >= 180.0 - self._ANGLE_TOL
+        if not high.any():
+            return theta, phi, e_theta, e_phi, np.ones((n_theta, len(phi)), dtype=bool)
+
+        rows = self._match_rows(-theta, theta)           # theta -> -theta row
+        valid = rows >= 0
+        if not valid.all():
+            logger.warning(
+                "transform_coordinates: theta grid is not symmetric about 0; %d samples "
+                "of folded phi cuts were dropped.", int((~valid).sum()))
+        src_rows = np.where(valid)[0]
+        dst_rows = rows[valid]
+
+        placements = []
+        for j, phi_c in enumerate(phi):
+            if high[j]:
+                placements.append((phi_c - 180.0, dst_rows,
+                                   -e_theta[:, src_rows, j], -e_phi[:, src_rows, j]))
+        all_rows = np.arange(n_theta)
+        for j, phi_c in enumerate(phi):
+            if not high[j]:
+                placements.append((phi_c, all_rows, e_theta[:, :, j], e_phi[:, :, j]))
+
+        new_phi, new_e_theta, new_e_phi, filled = self._regroup_cuts(n_freq, n_theta, placements)
+        return theta, new_phi, new_e_theta, new_e_phi, filled
+
     def transform_coordinates(self, format: str = 'sided', _preserve_polarization: bool = False) -> None:
         """
         Transform pattern coordinates to conform to a specified theta/phi convention.
@@ -440,166 +740,72 @@ class FarFieldOperationsMixin:
         - 'sided': theta 0:180, phi 0:360 (spherical convention)
         - 'central': theta -180:180, phi 0:180 (more common for antenna patterns)
 
+        Phi is always normalised to [0, 360) and sorted, and duplicate cuts
+        (for example both -180 and +180, or both 0 and 360) are merged. Cuts are
+        paired by their phi *values*: the theta < 0 half of the cut at phi and
+        the theta > 0 half of the cut at phi + 180 describe the same
+        directions, with both spherical field components negated because the
+        local theta_hat and phi_hat reverse across boresight. Positive-theta
+        (directly sampled) data wins where both a direct and a mirrored cut land
+        on the same output cut. Output samples with no source data (partial
+        spheres, unpaired cuts, asymmetric theta ranges) are zero-filled and a
+        warning is logged.
+
+        Calling with the pattern already in the requested format still
+        normalises phi, and for central input folds any cut outside
+        0 <= phi < 180 back into that range.
+
         Args:
             format: Target coordinate format ('sided' or 'central')
             _preserve_polarization: Internal flag to skip polarization recalculation
 
         Raises:
-            ValueError: If format is not 'sided' or 'central'
+            ValueError: If format is not 'sided' or 'central', or if a sided
+                pattern whose theta does not start at 0 is transformed to central
             NotImplementedError: If pattern has non-uniform theta grids
         """
         self._require_uniform_theta('transform_coordinates')
 
         if format not in ['sided', 'central']:
             raise ValueError("Format must be 'sided' or 'central'")
-        
-        # Get current coordinates
-        theta = self.theta_angles
-        phi = self.phi_angles
-        
-        # Get field components
+
+        theta = np.asarray(self.theta_angles, dtype=float)
+        phi = np.asarray(self.phi_angles, dtype=float)
         e_theta = self.data.e_theta.values.copy()
         e_phi = self.data.e_phi.values.copy()
         frequencies = self.frequencies
-        
-        # NORMALIZE PHI to 0-360 range first
-        if np.any(phi < 0):
-            # Phi has negative values, normalize to 0-360
-            phi_normalized = np.mod(phi, 360)
-            
-            # Sort to maintain ascending order
-            sort_indices = np.argsort(phi_normalized)
-            phi = phi_normalized[sort_indices]
-            
-            # Reorder field components along phi axis
-            e_theta = e_theta[:, :, sort_indices]
-            e_phi = e_phi[:, :, sort_indices]
 
-        # Check current format based on whether negative theta values exist
-        theta_min = np.min(theta)
-        theta_max = np.max(theta)
-        phi_min = np.min(phi)
-        phi_max = np.max(phi)
+        theta_min, theta_max = float(np.min(theta)), float(np.max(theta))
+        phi_min, phi_max = float(np.min(phi)), float(np.max(phi))
+
+        phi, (e_theta, e_phi) = self._normalize_phi(phi, e_theta, e_phi)
         is_central = theta_min < -0.5
-        is_sided = not is_central
 
-        # If already in the correct format, return
-        if (format == 'sided' and is_sided) or (format == 'central' and is_central):
-            return
-        
-        # Apply transformation based on target format
         if format == 'sided':
-            # Target: theta 0:180, phi 0:360
+            if is_central:
+                new_theta, new_phi, new_e_theta, new_e_phi, filled = \
+                    self._central_to_sided(theta, phi, e_theta, e_phi)
+            else:
+                new_theta, new_phi, new_e_theta, new_e_phi = theta, phi, e_theta, e_phi
+                filled = np.ones((len(theta), len(phi)), dtype=bool)
+        else:
+            if is_central:
+                new_theta, new_phi, new_e_theta, new_e_phi, filled = \
+                    self._canonicalize_central(theta, phi, e_theta, e_phi)
+            else:
+                new_theta, new_phi, new_e_theta, new_e_phi, filled = \
+                    self._sided_to_central(theta, phi, e_theta, e_phi)
 
-            # If phi extends well beyond 180, data already has sided-like phi range
-            # (allow phi ending at exactly 180, which is valid central format)
-            if np.max(phi) > 185:
-                return
+        if not filled.all():
+            logger.warning(
+                "transform_coordinates('%s'): %d of %d output samples have no source "
+                "data (incomplete sphere) and were set to zero.",
+                format, int((~filled).sum()), filled.size)
 
-            # Find theta = 0 index
-            theta0_idx = np.argmin(np.abs(theta))
-
-            # Create new theta vector (positive values only)
-            new_theta = theta[theta0_idx:].copy()
-            # Ensure first value is exactly 0 if it's close (for round-trip conversion)
-            if np.abs(new_theta[0]) < 1e-6:
-                new_theta[0] = 0.0
-            
-            # Create new phi vector
-            new_phi = np.concatenate((phi, phi+180))
-            
-            # Initialize new electric field arrays
-            new_e_theta = np.zeros((frequencies.size, len(new_theta), len(new_phi)), dtype=np.complex64)
-            new_e_phi = np.zeros((frequencies.size, len(new_theta), len(new_phi)), dtype=np.complex64)
-            
-            # Fill new electric field arrays
-            # First half of phi range - copy from positive theta
-            new_e_theta[:, :, :len(phi)] = e_theta[:, theta0_idx:, :]
-            new_e_phi[:, :, :len(phi)] = e_phi[:, theta0_idx:, :]
-            
-            # Second half of phi range - copy from negative theta (flipped)
-            if theta0_idx > 0:  # Only if we have negative theta values
-                # At theta_sided=0 (boresight), use the same data as the first half
-                # This ensures continuity at boresight where all phi cuts should match
-                new_e_theta[:, 0, len(phi):] = e_theta[:, theta0_idx, :]
-                new_e_phi[:, 0, len(phi):] = e_phi[:, theta0_idx, :]
-
-                # For theta_sided > 0, use flipped negative theta data with sign flip
-                # Central theta=-5 maps to sided theta=5 in the second phi half
-                flipped_e_theta = -np.flip(e_theta[:, :theta0_idx, :], axis=1)
-                flipped_e_phi = -np.flip(e_phi[:, :theta0_idx, :], axis=1)
-
-                # Calculate how many values to copy (we're filling indices 1 onwards)
-                n_values = min(flipped_e_theta.shape[1], new_e_theta.shape[1] - 1)
-
-                # Assign flipped data to theta indices 1 and beyond
-                if n_values > 0:
-                    new_e_theta[:, 1:1+n_values, len(phi):] = flipped_e_theta[:, :n_values, :]
-                    new_e_phi[:, 1:1+n_values, len(phi):] = flipped_e_phi[:, :n_values, :]
-
-                # If we didn't fill all values, fill the rest with the last value
-                filled_up_to = 1 + n_values
-                if filled_up_to < new_e_theta.shape[1]:
-                    if n_values > 0:  # Make sure we have at least one value to repeat
-                        for i in range(filled_up_to, new_e_theta.shape[1]):
-                            new_e_theta[:, i, len(phi):] = flipped_e_theta[:, n_values-1, :]
-                            new_e_phi[:, i, len(phi):] = flipped_e_phi[:, n_values-1, :]
-                    else:
-                        # No negative values to use, fill with zeros
-                        new_e_theta[:, filled_up_to:, len(phi):] = 0
-                        new_e_phi[:, filled_up_to:, len(phi):] = 0
-    
-        elif format == 'central':
-            # Target: theta -180:180, phi 0:180
-
-            # Ensure theta starts at 0 (with tolerance for floating point)
-            if not np.isclose(theta[0], 0, atol=1e-6):
-                raise ValueError("Input theta must start at 0 when transforming to central")
-            
-            # Generate new theta array
-            new_theta = np.concatenate((-np.flip(theta[1:]), theta))
-            
-            # Find phi 180 crossing index
-            phi180_idx = np.searchsorted(phi, 180, side='left')
-            
-            # Generate new phi vector (only 0-180)
-            new_phi = phi[:phi180_idx]
-            if len(new_phi) == 0:
-                # If no phi values are < 180, use all phi values
-                new_phi = phi
-            
-            # Initialize new electric field arrays
-            new_e_theta = np.zeros((frequencies.size, len(new_theta), len(new_phi)), dtype=np.complex64)
-            new_e_phi = np.zeros((frequencies.size, len(new_theta), len(new_phi)), dtype=np.complex64)
-            
-            # Fill new electric field arrays
-            # Positive theta section (original data)
-            new_e_theta[:, len(theta)-1:, :] = e_theta[:, :, :len(new_phi)]
-            new_e_phi[:, len(theta)-1:, :] = e_phi[:, :, :len(new_phi)]
-            
-            # Negative theta section (with phi+180 from original data)
-            if phi180_idx < len(phi):  # Only if we have phi values >= 180
-                # Extract the high phi section - only use as many as we have in new_phi
-                phi_high_indices = np.arange(phi180_idx, min(len(phi), phi180_idx + len(new_phi)))
-                
-                if len(phi_high_indices) > 0:
-                    n_neg_theta = len(theta) - 1  # Number of negative theta values
-                    n_phi_high = len(phi_high_indices)  # Number of high phi values
-                    n_phi_to_use = min(n_phi_high, len(new_phi))  # Number of phi values to use
-                    
-                    # Flip the theta axis for the negative theta values
-                    flipped_e_theta = -np.flip(e_theta[:, 1:, phi_high_indices], axis=1)
-                    flipped_e_phi = -np.flip(e_phi[:, 1:, phi_high_indices], axis=1)
-                    
-                    # Only use as many phi values as we have in the output
-                    new_e_theta[:, :n_neg_theta, :n_phi_to_use] = flipped_e_theta[:, :, :n_phi_to_use]
-                    new_e_phi[:, :n_neg_theta, :n_phi_to_use] = flipped_e_phi[:, :, :n_phi_to_use]
-        
-        # Now create a completely new Dataset with the new coordinates and data
-        new_data = xr.Dataset(
+        self.data = xr.Dataset(
             data_vars={
-                'e_theta': (('frequency', 'theta', 'phi'), new_e_theta), 
-                'e_phi': (('frequency', 'theta', 'phi'), new_e_phi), 
+                'e_theta': (('frequency', 'theta', 'phi'), np.asarray(new_e_theta, dtype=np.complex64)),
+                'e_phi': (('frequency', 'theta', 'phi'), np.asarray(new_e_phi, dtype=np.complex64)),
             },
             coords={
                 'theta': new_theta,
@@ -607,26 +813,18 @@ class FarFieldOperationsMixin:
                 'frequency': frequencies,
             }
         )
-        
-        # Replace the pattern's data with the new dataset
-        self.data = new_data
 
-        # Recalculate derived components e_co and e_cx (unless preserving)
         if not _preserve_polarization:
             self.assign_polarization(self.polarization)
 
-        # Clear cache
         self.clear_cache()
-        
-        # Update metadata if needed
+
         if hasattr(self, 'metadata') and self.metadata is not None:
-            if 'operations' not in self.metadata:
-                self.metadata['operations'] = []
-            self.metadata['operations'].append({
+            self.metadata.setdefault('operations', []).append({
                 'type': 'transform_coordinates',
                 'format': format,
-                'old_theta_range': [float(theta_min), float(theta_max)],
-                'old_phi_range': [float(phi_min), float(phi_max)],
+                'old_theta_range': [theta_min, theta_max],
+                'old_phi_range': [phi_min, phi_max],
                 'new_theta_range': [float(np.min(new_theta)), float(np.max(new_theta))],
                 'new_phi_range': [float(np.min(new_phi)), float(np.max(new_phi))]
             })

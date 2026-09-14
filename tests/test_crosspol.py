@@ -181,12 +181,8 @@ class TestSyntheticValues:
         np.testing.assert_allclose(n0_crosspol_level(central, THETA_E).values,
                                    n0_crosspol_level(sided_pattern, THETA_E).values, atol=1e-2)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="transform_coordinates('central') mis-aligns the phi >= 180 block when the "
-               "input phi grid is -180..180 with a duplicated endpoint (both map to 180). "
-               "Pre-existing in farfield_operations; not a crosspol issue.")
     def test_central_from_pm180_layout_matches_sided(self, sided_pattern):
+        """phi -180..180 with duplicated endpoint through the central transform."""
         central = sided_pattern.copy()
         central.transform_coordinates('central')
         np.testing.assert_allclose(integrated_xpd(central, THETA_E).values,

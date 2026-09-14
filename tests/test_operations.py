@@ -103,8 +103,15 @@ class TestPhaseExtraction:
 
 
 @requires_cut
-class TestRotateStub:
-    def test_rotate_raises_not_implemented(self):
+class TestRotate:
+    def test_zero_rotation_is_identity(self):
         pattern = read_cut(CUT_FILE, frequency_start=FREQ_8GHZ, frequency_end=FREQ_8GHZ)
-        with pytest.raises(NotImplementedError):
-            pattern.rotate(0, 0, 0)
+        before = pattern.data.e_theta.values.copy()
+        pattern.rotate(0, 0, 0)
+        np.testing.assert_array_equal(pattern.data.e_theta.values, before)
+
+    def test_rotation_runs_on_measured_pattern(self):
+        pattern = read_cut(CUT_FILE, frequency_start=FREQ_8GHZ, frequency_end=FREQ_8GHZ)
+        pattern.rotate(10, -5, 30)
+        assert pattern.data.e_theta.shape == pattern.data.e_phi.shape
+        assert np.all(np.isfinite(pattern.data.e_co.values))

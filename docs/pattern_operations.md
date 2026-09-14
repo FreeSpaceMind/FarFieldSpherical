@@ -63,7 +63,7 @@ This method is fast but only provides the phase center in the plane of the selec
 
 ## Isometric Rotation
 
-Rotates the antenna pattern in 3D, equivalent to physically rotating the antenna. This operation uses a sequence of Euler-angle rotations applied via direction cosines.
+`rotate(alpha, beta, gamma)` rotates the pattern rigidly, equivalent to physically rotating the antenna about the coordinate origin. Both the sampling directions and the field vectors are rotated.
 
 ### Rotation Convention
 
@@ -71,7 +71,7 @@ The rotation is parameterized by three angles $(\alpha, \beta, \gamma)$ applied 
 
 $$R = R_y(\alpha) \cdot R_x(\beta) \cdot R_z(\gamma)$$
 
-The individual rotation matrices are:
+i.e. roll $\gamma$ about $z$ first, then elevation $\beta$ about $x$, then azimuth $\alpha$ about $y$. The individual rotation matrices are:
 
 $$R_z(\gamma) = \begin{pmatrix} \cos\gamma & -\sin\gamma & 0 \\ \sin\gamma & \cos\gamma & 0 \\ 0 & 0 & 1 \end{pmatrix}$$
 
@@ -79,22 +79,29 @@ $$R_x(\beta) = \begin{pmatrix} 1 & 0 & 0 \\ 0 & \cos\beta & -\sin\beta \\ 0 & \s
 
 $$R_y(\alpha) = \begin{pmatrix} \cos\alpha & 0 & -\sin\alpha \\ 0 & 1 & 0 \\ \sin\alpha & 0 & \cos\alpha \end{pmatrix}$$
 
+The same matrices are used by the standalone `isometric_rotation` helper. The original boresight $(+z)$ moves to $R\hat{z}$:
+
+$$\theta_0 = \arccos(\cos\alpha\cos\beta), \qquad \phi_0 = \operatorname{atan2}(-\sin\beta,\; -\sin\alpha\cos\beta)$$
+
+Note the signs: with these matrices a positive $\alpha$ tilts the boresight toward $\phi = 180°$ ($-x$) and a positive $\beta$ toward $\phi = 270°$ ($-y$). Negate the angles for the opposite sense.
+
 ### Process
 
-1. **Convert to direction cosines**: Each grid point $(\theta_i, \phi_j)$ is mapped to $(u, v, w)$:
-   $$u = \sin\theta\cos\phi, \quad v = \sin\theta\sin\phi, \quad w = \cos\theta$$
+The rotated pattern is evaluated on the pattern's own $(\theta, \phi)$ grid, in its own coordinate format, so the grid and format are preserved.
 
-2. **Apply rotation**: The rotated direction cosines are computed:
-   $$\begin{pmatrix} u' \\ v' \\ w' \end{pmatrix} = R \begin{pmatrix} u \\ v \\ w \end{pmatrix}$$
+1. **Source field in Cartesian components.** A sided, $\phi$-normalised copy of the pattern is converted to Cartesian field vectors at every sample, $\mathbf{E} = E_\theta\hat{\theta} + E_\phi\hat{\phi}$. Cartesian components are continuous across the poles, which spherical components are not, so they interpolate cleanly.
 
-3. **Convert back to spherical**: The rotated Cartesian directions are mapped back:
-   $$\theta' = \arccos(w'), \quad \phi' = \arctan2(v', u')$$
+2. **Inverse-rotate the target directions.** For every grid direction $\hat{r}'$ of the output, the direction the antenna radiated toward before rotation is $\hat{r} = R^{-1}\hat{r}'$. For central-format grids $\hat{r}'$ is formed directly from the signed $\theta$, so negative $\theta$ needs no special handling.
 
-4. **Interpolate**: Since the rotated grid points generally do not fall on the original regular $(\theta, \phi)$ grid, the field values are interpolated from the original grid onto the rotated points using 2D interpolation.
+3. **Interpolate.** The three Cartesian components (real and imaginary parts) are interpolated at $\hat{r}$ with `scipy.interpolate.RegularGridInterpolator` (`method='linear'` by default; `'cubic'` is available and noticeably more accurate on coarse grids). When the $\phi$ grid covers the full circle it is padded periodically so the interpolation wraps across the seam. Directions that fall outside a partial-sphere pattern's coverage are set to zero and a warning is logged.
 
-### Field Vector Rotation
+4. **Rotate the field vector and project.** $\mathbf{E}'(\hat{r}') = R\,\mathbf{E}(\hat{r})$, then $E'_\theta = \mathbf{E}'\cdot\hat{\theta}'$ and $E'_\phi = \mathbf{E}'\cdot\hat{\phi}'$ using the basis at the output direction. Co- and cross-polarised components are recomputed afterwards.
 
-The field components $E_\theta$ and $E_\phi$ are vectors that must also be transformed. The rotation of the field vector accounts for the change in the local $\hat{\theta}$ and $\hat{\phi}$ directions at the rotated point.
+Because the field is interpolated, a rotation is only as accurate as the sampling: at a $1° \times 2°$ grid the linear-interpolation error on a smoothly varying unit-amplitude field is a few $10^{-3}$, and a rotation by a multiple of the $\phi$ step about $z$ is exact. Patterns with a phase centre far from the origin vary quickly in phase between samples and should be translated to their phase centre before rotating.
+
+### Mirroring
+
+`mirror_pattern()` copies the $\theta > 0$ half of every cut of a central-format pattern onto the matching $\theta < 0$ samples with $E_\theta$ negated and $E_\phi$ unchanged. It requires a central-format pattern whose $\theta$ grid includes $0°$ and is symmetric about it.
 
 ## MARS (Mathematical Absorber Reflection Suppression)
 
