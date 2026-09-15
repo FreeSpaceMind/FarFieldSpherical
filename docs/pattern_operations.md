@@ -69,21 +69,27 @@ This method is fast but only provides the phase center in the plane of the selec
 
 The rotation is parameterized by three angles $(\alpha, \beta, \gamma)$ applied as successive rotations about the coordinate axes:
 
-$$R = R_y(\alpha) \cdot R_x(\beta) \cdot R_z(\gamma)$$
+$$R = R_y(\alpha) \cdot R_x(-\beta) \cdot R_z(\gamma)$$
 
-i.e. roll $\gamma$ about $z$ first, then elevation $\beta$ about $x$, then azimuth $\alpha$ about $y$. The individual rotation matrices are:
+i.e. roll $\gamma$ about $z$ first, then elevation $\beta$ about $x$, then azimuth $\alpha$ about $y$. The signs are chosen so that positive angles tilt the boresight toward the positive axes. The individual rotation matrices are:
 
 $$R_z(\gamma) = \begin{pmatrix} \cos\gamma & -\sin\gamma & 0 \\ \sin\gamma & \cos\gamma & 0 \\ 0 & 0 & 1 \end{pmatrix}$$
 
-$$R_x(\beta) = \begin{pmatrix} 1 & 0 & 0 \\ 0 & \cos\beta & -\sin\beta \\ 0 & \sin\beta & \cos\beta \end{pmatrix}$$
+$$R_x(-\beta) = \begin{pmatrix} 1 & 0 & 0 \\ 0 & \cos\beta & \sin\beta \\ 0 & -\sin\beta & \cos\beta \end{pmatrix}$$
 
-$$R_y(\alpha) = \begin{pmatrix} \cos\alpha & 0 & -\sin\alpha \\ 0 & 1 & 0 \\ \sin\alpha & 0 & \cos\alpha \end{pmatrix}$$
+$$R_y(\alpha) = \begin{pmatrix} \cos\alpha & 0 & \sin\alpha \\ 0 & 1 & 0 \\ -\sin\alpha & 0 & \cos\alpha \end{pmatrix}$$
 
 The same matrices are used by the standalone `isometric_rotation` helper. The original boresight $(+z)$ moves to $R\hat{z}$:
 
-$$\theta_0 = \arccos(\cos\alpha\cos\beta), \qquad \phi_0 = \operatorname{atan2}(-\sin\beta,\; -\sin\alpha\cos\beta)$$
+$$\theta_0 = \arccos(\cos\alpha\cos\beta), \qquad \phi_0 = \operatorname{atan2}(\sin\beta,\; \sin\alpha\cos\beta)$$
 
-Note the signs: with these matrices a positive $\alpha$ tilts the boresight toward $\phi = 180°$ ($-x$) and a positive $\beta$ toward $\phi = 270°$ ($-y$). Negate the angles for the opposite sense.
+A positive $\alpha$ tilts the boresight toward $+x$ ($\phi = 0°$), a positive $\beta$ toward $+y$ ($\phi = 90°$), and a positive $\gamma$ rolls the pattern about $z$ from $+x$ toward $+y$.
+
+### Rotation versus measurement correction
+
+`rotate` changes the antenna's orientation: the whole pattern, field vectors included, turns rigidly about the origin. It is the operation to use when the antenna will be mounted pointing somewhere other than $+z$.
+
+`shift_theta_origin` and `shift_phi_origin` are **measurement corrections**. They re-zero the measured angle axes to compensate for a positioner or mounting offset: `shift_phi_origin` relabels the cuts, and `shift_theta_origin` slides each $\phi$ cut along its own $\theta$ axis. Because every cut is shifted along a different great circle, a theta-origin shift is not a rotation of the antenna and does not move the boresight to a definite $(\theta_0, \phi_0)$; it only makes sense for small offsets and for data whose true boresight was at $\theta = 0$ of the positioner.
 
 ### Process
 

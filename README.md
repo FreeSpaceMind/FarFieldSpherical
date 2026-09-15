@@ -122,8 +122,8 @@ pattern.translate(translation)
 # Change polarization
 pattern.change_polarization('rhcp')
 
-# Rotate pattern (rigid rotation of the antenna: R = Ry(alpha) Rx(beta) Rz(gamma), degrees)
-# Boresight moves to theta0 = acos(cos(alpha) cos(beta)), phi0 = atan2(-sin(beta), -sin(alpha) cos(beta))
+# Rotate pattern (rigid rotation of the antenna, degrees; +alpha tilts boresight toward +x, +beta toward +y)
+# Boresight moves to theta0 = acos(cos(alpha) cos(beta)), phi0 = atan2(sin(beta), sin(alpha) cos(beta))
 pattern.rotate(alpha=10, beta=20, gamma=0)
 pattern.rotate(alpha=10, beta=20, gamma=0, method='cubic')  # more accurate on coarse grids
 

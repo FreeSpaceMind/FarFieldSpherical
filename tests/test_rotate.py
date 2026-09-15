@@ -87,7 +87,7 @@ class TestRotate:
             i, j = np.unravel_index(np.argmax(mag), mag.shape)
             a, b = np.radians(alpha), np.radians(beta)
             theta0 = np.degrees(np.arccos(np.cos(a) * np.cos(b)))
-            phi0 = np.degrees(np.arctan2(-np.sin(b), -np.sin(a) * np.cos(b))) % 360
+            phi0 = np.degrees(np.arctan2(np.sin(b), np.sin(a) * np.cos(b))) % 360
             assert abs(TH_FINE[i] - theta0) <= 1.0, (alpha, beta, TH_FINE[i], theta0)
             assert abs((PHI_FINE[j] - phi0 + 180) % 360 - 180) <= 2.0, (alpha, beta, PHI_FINE[j], phi0)
 
@@ -122,6 +122,13 @@ class TestRotate:
         assert np.all(np.isfinite(p.data.e_co.values))
         op = p.metadata['operations'][-1]
         assert op['type'] == 'rotate' and op['alpha'] == 10.0
+
+    def test_positive_angles_tilt_toward_positive_axes(self):
+        z = np.array([0.0, 0.0, 1.0])
+        np.testing.assert_allclose(_rotation_matrix(30, 0, 0) @ z, [np.sin(np.radians(30)), 0, np.cos(np.radians(30))], atol=1e-12)
+        np.testing.assert_allclose(_rotation_matrix(0, 30, 0) @ z, [0, np.sin(np.radians(30)), np.cos(np.radians(30))], atol=1e-12)
+        # roll takes +x toward +y
+        np.testing.assert_allclose(_rotation_matrix(0, 0, 90) @ np.array([1.0, 0, 0]), [0, 1, 0], atol=1e-12)
 
     def test_isometric_rotation_consistent_with_matrix(self):
         u, v, w = 0.2, -0.4, 0.8

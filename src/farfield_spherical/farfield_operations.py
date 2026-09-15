@@ -301,12 +301,11 @@ class FarFieldOperationsMixin:
         """
         Rotate the pattern rigidly, as if the antenna itself were rotated.
 
-        The rotation is R = R_y(alpha) . R_x(beta) . R_z(gamma), applied in the
-        order roll (gamma, about z), elevation (beta, about x), azimuth (alpha,
-        about y), with the matrices defined in
-        ``pattern_operations.isometric_rotation``. The field at a direction
-        r' after rotation is the rotated field the antenna radiated toward
-        R^-1 r' before rotation:
+        The rotation is R = R_y(alpha) . R_x(-beta) . R_z(gamma), applied in the
+        order roll (gamma, about z), elevation (beta), azimuth (alpha), with
+        the matrices defined in ``pattern_operations._rotation_matrix``. The
+        field at a direction r' after rotation is the rotated field the
+        antenna radiated toward R^-1 r' before rotation:
 
             E'(r') = R . E(R^-1 r')
 
@@ -314,11 +313,15 @@ class FarFieldOperationsMixin:
         original boresight (+z) ends up at direction R.z, i.e.
 
             theta_0 = arccos(cos(alpha) cos(beta))
-            phi_0   = atan2(-sin(beta), -sin(alpha) cos(beta))
+            phi_0   = atan2(sin(beta), sin(alpha) cos(beta))
 
-        With the documented matrices a positive ``alpha`` tilts the boresight
-        toward phi = 180 deg and a positive ``beta`` toward phi = 270 deg;
-        negate the angles for the opposite sense.
+        A positive ``alpha`` tilts the boresight toward +x (phi = 0), a
+        positive ``beta`` toward +y (phi = 90 deg), and a positive ``gamma``
+        rolls the pattern from +x toward +y about the z-axis.
+
+        This is a rigid rotation of the antenna. It is not the same as
+        ``shift_theta_origin`` / ``shift_phi_origin``, which re-zero the
+        measured angle axes of each cut to correct positioner misalignment.
 
         The result is sampled on the pattern's existing (theta, phi) grid, in
         its existing coordinate format, by interpolating the Cartesian

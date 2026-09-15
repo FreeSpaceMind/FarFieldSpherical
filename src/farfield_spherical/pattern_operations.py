@@ -230,35 +230,39 @@ def transform_uvw2tp(u: np.ndarray, v: np.ndarray, w: np.ndarray) -> Tuple[np.nd
 
 def _rotation_matrix(az: float, el: float, roll: float) -> np.ndarray:
     """
-    Rotation matrix R = R_y(az) . R_x(el) . R_z(roll) used by isometric_rotation
+    Rotation matrix R = R_y(az) . R_x(-el) . R_z(roll) used by isometric_rotation
     and FarFieldSpherical.rotate. Angles in degrees.
 
-    Applied to a column vector this performs roll (about z), then elevation
-    (about x), then azimuth (about y).
+    Applied to a column vector this performs roll (about z), then elevation,
+    then azimuth. The signs are chosen so that the +z axis (boresight) tilts
+    toward +x for positive ``az`` and toward +y for positive ``el``; ``roll``
+    is a right-handed rotation about +z (from +x toward +y).
+
+        R z_hat = ( sin(az) cos(el),  sin(el),  cos(az) cos(el) )
     """
     az_rad = np.radians(az)
     el_rad = np.radians(el)
     roll_rad = np.radians(roll)
 
-    # Roll - rotation around z-axis
+    # Roll: right-handed rotation about +z
     R_z = np.array([
         [np.cos(roll_rad), -np.sin(roll_rad), 0],
         [np.sin(roll_rad), np.cos(roll_rad), 0],
         [0, 0, 1]
     ])
 
-    # Elevation - rotation around x-axis
+    # Elevation: rotation about x, sense chosen so +z moves toward +y
     R_x = np.array([
         [1, 0, 0],
-        [0, np.cos(el_rad), -np.sin(el_rad)],
-        [0, np.sin(el_rad), np.cos(el_rad)]
+        [0, np.cos(el_rad), np.sin(el_rad)],
+        [0, -np.sin(el_rad), np.cos(el_rad)]
     ])
 
-    # Azimuth - rotation around y-axis
+    # Azimuth: right-handed rotation about +y, so +z moves toward +x
     R_y = np.array([
-        [np.cos(az_rad), 0, -np.sin(az_rad)],
+        [np.cos(az_rad), 0, np.sin(az_rad)],
         [0, 1, 0],
-        [np.sin(az_rad), 0, np.cos(az_rad)]
+        [-np.sin(az_rad), 0, np.cos(az_rad)]
     ])
 
     return R_y @ R_x @ R_z
@@ -274,9 +278,9 @@ def isometric_rotation(u: np.ndarray, v: np.ndarray, w: np.ndarray,
     2. Elevation (around x-axis)
     3. Azimuth (around y-axis)
 
-    i.e. R = R_y(az) . R_x(el) . R_z(roll); see ``_rotation_matrix`` for the
-    matrices. Note that with these matrices a positive ``az`` moves the +z
-    axis toward -x and a positive ``el`` moves it toward -y.
+    i.e. R = R_y(az) . R_x(-el) . R_z(roll); see ``_rotation_matrix`` for the
+    matrices. A positive ``az`` moves the +z axis toward +x and a positive
+    ``el`` moves it toward +y.
     
     Args:
         u, v, w: Direction cosines
