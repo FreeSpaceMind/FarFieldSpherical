@@ -91,6 +91,14 @@ A positive $\alpha$ tilts the boresight toward $+x$ ($\phi = 0°$), a positive $
 
 `shift_theta_origin` and `shift_phi_origin` are **measurement corrections**. They re-zero the measured angle axes to compensate for a positioner or mounting offset: `shift_phi_origin` relabels the cuts, and `shift_theta_origin` slides each $\phi$ cut along its own $\theta$ axis. Because every cut is shifted along a different great circle, a theta-origin shift is not a rotation of the antenna and does not move the boresight to a definite $(\theta_0, \phi_0)$; it only makes sense for small offsets and for data whose true boresight was at $\theta = 0$ of the positioner.
 
+### Theta Origin Shift
+
+`shift_theta_origin(offset)` resamples every cut so that
+
+$$E_{new}(\theta, \phi) = E_{old}(\theta + \delta, \phi)$$
+
+The shift is carried out in central format, where each $\phi$ cut is a closed great circle covering $360°$ of $\theta$. A cut that spans the full circle is treated as periodic, so samples pushed past one end reappear at the other and nothing is lost; a partial cut is extended with its end values. Amplitude and unwrapped phase are interpolated separately with cubic splines. A sided-format pattern is converted to central, shifted, converted back, and mapped onto its own $\theta/\phi$ grid, so the caller's layout is unchanged; this is why a shift applied to a sided pattern shows up as data moving from the $\phi$ cuts onto the $\phi + 180°$ cuts across boresight rather than being clipped at $\theta = 0$.
+
 ### Process
 
 The rotated pattern is evaluated on the pattern's own $(\theta, \phi)$ grid, in its own coordinate format, so the grid and format are preserved.

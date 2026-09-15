@@ -1059,122 +1059,117 @@ class FarFieldOperationsMixin:
 
     def shift_theta_origin(self, theta_offset: float) -> None:
         """
-        Shifts the origin of the theta coordinate axis for all phi cuts.
+        Shift the origin of the theta axis of every phi cut (measurement correction).
 
-        This is useful for aligning measurement data when the mechanical
-        antenna rotation axis doesn't align with the desired coordinate
-        system (e.g., antenna boresight).
+        This compensates a positioner or mounting offset: the sample that was
+        recorded at ``theta`` is moved to ``theta - theta_offset`` on the same
+        phi cut, so a pattern whose peak was measured at ``theta = +2`` is
+        brought onto boresight with ``theta_offset = 2``. Each cut is shifted
+        along its own theta axis, so this is *not* a rigid rotation of the
+        antenna; use ``rotate`` for that.
 
-        The function preserves the original theta grid while shifting
-        the pattern data through interpolation along each phi cut.
+        The shift is performed in central format, where each phi cut is a
+        closed great circle: a sided pattern is converted, shifted, and mapped
+        back onto its own theta/phi grid. Cuts that span the full circle are
+        wrapped periodically, so no data is lost at the ends; partial cuts are
+        extended with their end values. Amplitude and unwrapped phase are
+        interpolated separately with cubic splines.
 
         Args:
-            theta_offset: Angle in degrees to shift the theta origin.
-                         Positive values move theta=0 to the right (positive theta),
-                         negative values move theta=0 to the left (negative theta).
+            theta_offset: Shift in degrees. Positive moves the pattern toward
+                negative theta (central) / toward the phi + 180 side (sided).
 
-        Notes:
-            - This performs interpolation along the theta axis for each phi cut
-            - Complex field components are interpolated separately for amplitude and phase
-              to avoid interpolation issues with complex numbers
-            - Phase discontinuities are handled by unwrapping before interpolation
+        Raises:
+            NotImplementedError: If the pattern has non-uniform theta grids
         """
         self._require_uniform_theta('shift_theta_origin')
 
-        # Get underlying numpy arrays
-        frequency = self.data.frequency.values
-        theta = self.data.theta.values
-        phi = self.data.phi.values
-        e_theta = self.data.e_theta.values.copy()
-        e_phi = self.data.e_phi.values.copy()
-        
-        # Create shifted theta array for original data position
-        # Positive theta_offset means data shifts left, grid points stay the same
-        shifted_theta = theta - theta_offset
-        
-        # Initialize output arrays with same shape as input
-        e_theta_new = np.zeros_like(e_theta, dtype=complex)
-        e_phi_new = np.zeros_like(e_phi, dtype=complex)
-        
-        # Process each frequency and phi cut separately
-        for f_idx in range(len(frequency)):
-            for p_idx in range(len(phi)):
-                # For each component, separate amplitude and phase for interpolation
-                
-                # Process e_theta
-                amp_theta = np.abs(e_theta[f_idx, :, p_idx])
-                phase_theta = np.unwrap(np.angle(e_theta[f_idx, :, p_idx]))
-                
-                # Create interpolation functions for amplitude and phase
-                amp_interp_theta = interp1d(
-                    shifted_theta, 
-                    amp_theta, 
-                    kind='cubic', 
-                    bounds_error=False, 
-                    fill_value=(amp_theta[0], amp_theta[-1])
-                )
-                
-                phase_interp_theta = interp1d(
-                    shifted_theta, 
-                    phase_theta, 
-                    kind='cubic', 
-                    bounds_error=False, 
-                    fill_value=(phase_theta[0], phase_theta[-1])
-                )
-                
-                # Interpolate onto original grid
-                amp_new_theta = amp_interp_theta(theta)
-                phase_new_theta = phase_interp_theta(theta)
-                
-                # Combine amplitude and phase back to complex
-                e_theta_new[f_idx, :, p_idx] = amp_new_theta * np.exp(1j * phase_new_theta)
-                
-                # Process e_phi
-                amp_phi = np.abs(e_phi[f_idx, :, p_idx])
-                phase_phi = np.unwrap(np.angle(e_phi[f_idx, :, p_idx]))
-                
-                # Create interpolation functions for amplitude and phase
-                amp_interp_phi = interp1d(
-                    shifted_theta, 
-                    amp_phi, 
-                    kind='cubic', 
-                    bounds_error=False, 
-                    fill_value=(amp_phi[0], amp_phi[-1])
-                )
-                
-                phase_interp_phi = interp1d(
-                    shifted_theta, 
-                    phase_phi, 
-                    kind='cubic', 
-                    bounds_error=False, 
-                    fill_value=(phase_phi[0], phase_phi[-1])
-                )
-                
-                # Interpolate onto original grid
-                amp_new_phi = amp_interp_phi(theta)
-                phase_new_phi = phase_interp_phi(theta)
-                
-                # Combine amplitude and phase back to complex
-                e_phi_new[f_idx, :, p_idx] = amp_new_phi * np.exp(1j * phase_new_phi)
-        
-        # Update the pattern data
-        self.data['e_theta'].values = e_theta_new
-        self.data['e_phi'].values = e_phi_new
-        
-        # Recalculate derived components e_co and e_cx
+        theta = np.asarray(self.theta_angles, dtype=float)
+        is_central = theta.min() < -0.5
+
+        if is_central:
+            e_theta, e_phi = self._shift_cuts_along_theta(
+                theta, self.data.e_theta.values, self.data.e_phi.values, theta_offset)
+        elif np.isclose(theta[0], 0.0, atol=self._ANGLE_TOL):
+            # Sided: work on a closed-circle (central) copy, then map back
+            # onto this pattern's own grid so the caller's layout is kept.
+            work = self.copy()
+            work.transform_coordinates('central', _preserve_polarization=True)
+            et, ep = self._shift_cuts_along_theta(
+                np.asarray(work.theta_angles, dtype=float),
+                work.data.e_theta.values, work.data.e_phi.values, theta_offset)
+            work.data['e_theta'].values = et.astype(np.complex64)
+            work.data['e_phi'].values = ep.astype(np.complex64)
+            work.transform_coordinates('sided', _preserve_polarization=True)
+
+            phi_norm = np.mod(np.asarray(self.phi_angles, dtype=float), 360.0)
+            phi_norm = np.where(np.isclose(phi_norm, 360.0, atol=self._ANGLE_TOL), 0.0, phi_norm)
+            phi_idx = self._match_rows(phi_norm, np.asarray(work.phi_angles, dtype=float))
+            theta_idx = self._match_rows(theta, np.asarray(work.theta_angles, dtype=float))
+            if np.any(phi_idx < 0) or np.any(theta_idx < 0):
+                raise RuntimeError("shift_theta_origin: could not map the shifted pattern "
+                                   "back onto the original grid")
+            e_theta = work.data.e_theta.values[:, theta_idx, :][:, :, phi_idx]
+            e_phi = work.data.e_phi.values[:, theta_idx, :][:, :, phi_idx]
+        else:
+            logger.warning(
+                "shift_theta_origin: sided pattern does not start at theta = 0; "
+                "shifting each cut with end-value extension instead of wrapping.")
+            e_theta, e_phi = self._shift_cuts_along_theta(
+                theta, self.data.e_theta.values, self.data.e_phi.values, theta_offset)
+
+        self.data['e_theta'].values = np.asarray(e_theta, dtype=np.complex64)
+        self.data['e_phi'].values = np.asarray(e_phi, dtype=np.complex64)
+
         self.assign_polarization(self.polarization)
-        
-        # Clear cache
         self.clear_cache()
-        
-        # Update metadata if needed
+
         if hasattr(self, 'metadata') and self.metadata is not None:
-            if 'operations' not in self.metadata:
-                self.metadata['operations'] = []
-            self.metadata['operations'].append({
+            self.metadata.setdefault('operations', []).append({
                 'type': 'shift_theta_origin',
                 'theta_offset': float(theta_offset)
             })
+
+    @classmethod
+    def _shift_cuts_along_theta(cls, theta, e_theta, e_phi, theta_offset):
+        """
+        Resample (frequency, theta, phi) fields so new(theta) = old(theta + offset).
+
+        Cuts that span a full 360 degrees are treated as periodic; otherwise
+        the end values are extended. Returns (e_theta, e_phi) as complex128.
+        """
+        theta = np.asarray(theta, dtype=float)
+        n = len(theta)
+        span = theta[-1] - theta[0]
+        step = span / (n - 1) if n > 1 else 0.0
+        duplicate_end = np.isclose(span, 360.0, atol=cls._ANGLE_TOL)
+        full_circle = duplicate_end or np.isclose(span + step, 360.0, atol=1e-6)
+
+        base_t = theta[:-1] if duplicate_end else theta
+        if full_circle:
+            x = np.concatenate([base_t - 360.0, base_t, base_t + 360.0])
+        else:
+            x = theta
+
+        def resample(field):
+            f = np.asarray(field, dtype=np.complex128)
+            y = f[:, :-1, :] if duplicate_end else f
+            if full_circle:
+                y = np.concatenate([y, y, y], axis=1)
+            amp = np.abs(y)
+            phase = np.unwrap(np.angle(y), axis=1)
+            kind = 'cubic' if len(x) >= 4 else 'linear'
+            common = dict(kind=kind, axis=1, bounds_error=False, assume_sorted=True)
+            amp_i = interp1d(x, amp, fill_value=(amp[:, 0, :], amp[:, -1, :]), **common)
+            ph_i = interp1d(x, phase, fill_value=(phase[:, 0, :], phase[:, -1, :]), **common)
+            target = theta + theta_offset
+            if full_circle:
+                # keep the query inside the padded range
+                target = x[0] + np.mod(target - x[0], 360.0 * 3)
+                target = np.where(target > x[-1], target - 360.0, target)
+            return amp_i(target) * np.exp(1j * ph_i(target))
+
+        return resample(e_theta), resample(e_phi)
 
     def shift_phi_origin(self, phi_offset: float) -> None:
         """
