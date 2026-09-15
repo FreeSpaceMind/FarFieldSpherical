@@ -3,6 +3,8 @@ Mixin class that contains operations for FarFieldSpherical objects.
 This class is designed to be mixed into the FarFieldSpherical class.
 """
 
+import copy
+
 import numpy as np
 import xarray as xr
 from typing import Tuple, Union, Optional, List, Any, Callable
@@ -268,10 +270,12 @@ class FarFieldOperationsMixin:
 
     def scale_amplitude(self, scale_factor: float) -> None:
         """
-        Scale the amplitude of the pattern by a constant factor.
+        Scale the amplitude of the pattern by a constant number of dB.
         
         Args:
-            scale_factor: Factor to scale amplitudes by (linear, not dB)
+            scale_factor: Amplitude scale in dB. The field is multiplied by
+                10**(scale_factor/20), so 6.0 is a factor of two in amplitude
+                and 0.0 leaves the pattern unchanged.
             
         Note:
             This modifies the pattern in-place.
@@ -1042,20 +1046,7 @@ class FarFieldOperationsMixin:
             self.metadata['operations'].append({
                 'type': 'swap_polarization_axes'
             })
-        
-        # Recalculate derived components e_co and e_cx
-        self.assign_polarization(self.polarization)
-        
-        # Clear cache
-        self.clear_cache()
-        
-        # Update metadata if needed
-        if hasattr(self, 'metadata') and self.metadata is not None:
-            if 'operations' not in self.metadata:
-                self.metadata['operations'] = []
-            self.metadata['operations'].append({
-                'type': 'swap_polarization_axes'
-            })
+
 
     def shift_theta_origin(self, theta_offset: float) -> None:
         """
@@ -1173,46 +1164,48 @@ class FarFieldOperationsMixin:
 
     def shift_phi_origin(self, phi_offset: float) -> None:
         """
-        Rotates the pattern in phi by adding an offset to phi coordinates.
+        Shift the origin of the phi axis (measurement correction).
 
-        The phi values are shifted by the offset, wrapped to 0-360, and the data
-        is reordered so phi starts at 0 (or the minimum value).
+        Adds ``phi_offset`` to every phi coordinate, wraps to [0, 360), sorts
+        the cuts and merges any that coincide after wrapping. The spherical
+        components e_theta / e_phi travel with their cut unchanged, but e_co
+        and e_cx are Ludwig-3 components referred to the fixed x/y axes, so
+        they are recomputed from the new phi labels.
+
+        This is a measurement correction for a positioner or mounting offset in
+        azimuth. It is equivalent to a rigid rotation about the z-axis; use
+        ``rotate(0, 0, gamma)`` when you mean to reorient the antenna, so that
+        the intent is recorded in the pattern's history.
 
         Args:
-            phi_offset: Angle in degrees to add to phi coordinates.
+            phi_offset: Angle in degrees to add to the phi coordinates.
         """
-        phi = self.data.phi.values.copy()
-
-        if len(phi) < 2:
+        phi = np.asarray(self.data.phi.values, dtype=float)
+        if len(phi) == 0:
             return
 
-        # Add offset and wrap to 0-360
-        new_phi = np.mod(phi + phi_offset, 360.0)
+        e_theta = self.data.e_theta.values
+        e_phi = self.data.e_phi.values
+        new_phi, (e_theta, e_phi) = self._normalize_phi(phi + phi_offset, e_theta, e_phi)
 
-        # Find sort indices to put phi back in ascending order
-        sort_idx = np.argsort(new_phi)
-        sorted_phi = new_phi[sort_idx]
+        self.data = xr.Dataset(
+            data_vars={
+                'e_theta': (('frequency', 'theta', 'phi'), np.asarray(e_theta, dtype=np.complex64)),
+                'e_phi': (('frequency', 'theta', 'phi'), np.asarray(e_phi, dtype=np.complex64)),
+            },
+            coords={
+                'theta': self.data.theta.values,
+                'phi': new_phi,
+                'frequency': self.frequencies,
+            }
+        )
 
-        # Reorder all field components along phi axis (axis=2)
-        self.data['e_theta'].values = self.data.e_theta.values[:, :, sort_idx]
-        self.data['e_phi'].values = self.data.e_phi.values[:, :, sort_idx]
-
-        if 'e_co' in self.data:
-            self.data['e_co'].values = self.data.e_co.values[:, :, sort_idx]
-        if 'e_cx' in self.data:
-            self.data['e_cx'].values = self.data.e_cx.values[:, :, sort_idx]
-
-        # Update phi coordinates
-        self.data = self.data.assign_coords({'phi': sorted_phi})
-
-        # Clear cache
+        # e_co / e_cx depend on phi, so they must be re-derived, not reordered.
+        self.assign_polarization(self.polarization)
         self.clear_cache()
 
-        # Update metadata
         if hasattr(self, 'metadata') and self.metadata is not None:
-            if 'operations' not in self.metadata:
-                self.metadata['operations'] = []
-            self.metadata['operations'].append({
+            self.metadata.setdefault('operations', []).append({
                 'type': 'shift_phi_origin',
                 'phi_offset': float(phi_offset)
             })
@@ -1347,15 +1340,18 @@ class FarFieldOperationsMixin:
             }
         )
         
-        # Create new FarFieldSpherical instance using the same type as self
-        new_pattern = type(self).__new__(type(self))
-        new_pattern.data = new_data
-        new_pattern.polarization = self.polarization
-        
-        # Copy metadata and add operation record
-        if hasattr(self, 'metadata') and self.metadata is not None:
-            new_pattern.metadata = self.metadata.copy()
-        else:
+        # Build a fully initialised instance (going through __init__ so that
+        # _theta_grid, the cache and the co/cross components all exist).
+        new_pattern = type(self)(
+            theta=actual_theta,
+            phi=actual_phi,
+            frequency=orig_freq,
+            e_theta=new_e_theta,
+            e_phi=new_e_phi,
+            polarization=self.polarization,
+            metadata=copy.deepcopy(self.metadata) if self.metadata else None,
+        )
+        if new_pattern.metadata is None:
             new_pattern.metadata = {}
         
         if 'operations' not in new_pattern.metadata:

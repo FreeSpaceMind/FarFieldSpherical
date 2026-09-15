@@ -1,11 +1,15 @@
 """
 Functions for working across multiple far-field spherical patterns.
 """
+import logging
+
 import numpy as np
 from typing import List, Optional, Union, Dict, Any, Tuple
 
 from .farfield import FarFieldSpherical
 from .polarization import polarization_tp2xy, polarization_xy2tp, polarization_rl2tp
+
+logger = logging.getLogger(__name__)
 
 def average_patterns(patterns: List[FarFieldSpherical], weights: Optional[List[float]] = None) -> FarFieldSpherical:
     """
@@ -79,6 +83,16 @@ def average_patterns(patterns: List[FarFieldSpherical], weights: Optional[List[f
         if hasattr(pattern, 'metadata') and pattern.metadata:
             metadata[f'source_pattern_{i}_metadata'] = pattern.metadata
     
+    # Keep the inputs' polarization rather than letting it be auto-detected;
+    # auto-detection can only return x/y/rhcp/lhcp, so averaging two
+    # theta-polarized patterns would silently come back as 'x'.
+    source_pols = {p.polarization for p in patterns}
+    result_pol = patterns[0].polarization if len(source_pols) == 1 else None
+    if result_pol is None:
+        logger.warning(
+            "average_patterns: inputs have mixed polarizations %s; the result's "
+            "polarization will be auto-detected.", sorted(source_pols))
+
     # Create a new pattern with the averaged data
     return FarFieldSpherical(
         theta=theta,
@@ -86,6 +100,7 @@ def average_patterns(patterns: List[FarFieldSpherical], weights: Optional[List[f
         frequency=freq,
         e_theta=e_theta_avg,
         e_phi=e_phi_avg,
+        polarization=result_pol,
         metadata=metadata
     )
 
@@ -134,6 +149,9 @@ def difference_patterns(
     # Ensure both patterns have the same polarization
     pol = pattern1.polarization
     if pattern2.polarization != pol:
+        # Work on a copy: converting the caller's pattern in place would leave
+        # their object in a different polarization after this call returns.
+        pattern2 = pattern2.copy()
         pattern2.change_polarization(pol)
     
     # Get the field components - work directly with co-pol and cross-pol
@@ -177,9 +195,13 @@ def difference_patterns(
     e_phi_diff = np.zeros_like(e_co_diff, dtype=complex)
     
     if pol in ('rhcp', 'rh', 'r', 'lhcp', 'lh', 'l'):
-        # For circular: convert from RL back to theta/phi
+        # polarization_rl2tp takes (right, left). For RHCP e_co is the right
+        # component; for LHCP e_co is the left one, so the pair is swapped.
+        right_diff, left_diff = ((e_co_diff, e_cx_diff)
+                                 if pol in ('rhcp', 'rh', 'r')
+                                 else (e_cx_diff, e_co_diff))
         for f_idx in range(len(freq1)):
-            e_theta_temp, e_phi_temp = polarization_rl2tp(phi1, e_co_diff[f_idx], e_cx_diff[f_idx])
+            e_theta_temp, e_phi_temp = polarization_rl2tp(phi1, right_diff[f_idx], left_diff[f_idx])
             e_theta_diff[f_idx] = e_theta_temp
             e_phi_diff[f_idx] = e_phi_temp
     elif pol in ('x', 'l3x'):

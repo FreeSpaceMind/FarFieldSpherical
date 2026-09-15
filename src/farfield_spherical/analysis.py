@@ -1,14 +1,59 @@
 """
 Analysis functions for antenna radiation patterns.
 """
+import logging
+
 import numpy as np
 from scipy import optimize
 from typing import Dict, Tuple, Optional, List, Union
 import xarray as xr
 
-from .utilities import find_nearest, frequency_to_wavelength
+from .utilities import find_nearest, frequency_to_wavelength, lightspeed
 from .pattern_operations import unwrap_phase, phase_pattern_translate
 from .polarization import polarization_tp2rl
+
+logger = logging.getLogger(__name__)
+
+
+def _integrate_solid_angle(values: np.ndarray, theta_rad: np.ndarray,
+                           phi_rad: np.ndarray) -> float:
+    """
+    Integrate ``values`` over solid angle on a (theta, phi) grid.
+
+        I = int int values * sin|theta| dtheta dphi
+
+    ``sin|theta|`` keeps the weight positive for central-format grids, where
+    theta runs negative. Theta uses the trapezoid rule. Phi uses a periodic
+    (rectangular) rule when the grid is uniform and spans a full period, which
+    is exact for a periodic integrand and avoids losing the last wedge of a
+    grid such as 0, 15, ..., 345; otherwise it falls back to the trapezoid rule.
+
+    Args:
+        values: Array shaped (n_theta, n_phi)
+        theta_rad: Theta samples in radians, ascending
+        phi_rad: Phi samples in radians, ascending
+
+    Returns:
+        float: The integral
+    """
+    weighted = values * np.sin(np.abs(theta_rad))[:, None]
+
+    dphi_all = np.diff(phi_rad)
+    period = np.pi if _is_central_phi_span(phi_rad) else 2 * np.pi
+    periodic = (len(phi_rad) > 1
+                and np.allclose(dphi_all, dphi_all[0], atol=1e-9)
+                and np.isclose(len(phi_rad) * dphi_all[0], period, atol=1e-6))
+    if periodic:
+        over_phi = np.sum(weighted, axis=1) * dphi_all[0]
+    else:
+        over_phi = np.trapezoid(weighted, phi_rad, axis=1)
+
+    return float(np.trapezoid(over_phi, theta_rad))
+
+
+def _is_central_phi_span(phi_rad: np.ndarray) -> bool:
+    """True when the phi grid spans about 180 degrees rather than 360."""
+    return bool(phi_rad[-1] - phi_rad[0] < 1.05 * np.pi)
 
 
 def calculate_phase_center(pattern, theta_angle: float, frequency: Optional[float] = None, 
@@ -311,23 +356,44 @@ def calculate_directivity(
             freq_idx = freq_idx.item()
         freq = freq_array[freq_idx]
     
-    # Check angular coverage to determine method
-    theta_min, theta_max = np.min(theta_array), np.max(theta_array)
-    phi_min, phi_max = np.min(phi_array), np.max(phi_array)
-    
-    # For central coordinates (theta from boresight), calculate solid angle coverage
-    if abs(theta_max) == abs(theta_min):  # Symmetric around boresight
-        cone_half_angle = max(abs(theta_min), abs(theta_max))
-        # Solid angle of cone = 2π(1 - cos(half_angle)) for full azimuth
-        # For partial azimuth, multiply by phi_coverage
-        phi_coverage = (phi_max - phi_min) / 360.0
-        solid_angle_measured = 2 * np.pi * (1 - np.cos(np.deg2rad(cone_half_angle))) * phi_coverage
-    else:
-        # Asymmetric case - approximate
-        solid_angle_measured = np.deg2rad(phi_max - phi_min) * np.deg2rad(theta_max - theta_min)
-    
+    if not pattern.has_uniform_theta:
+        raise NotImplementedError(
+            "calculate_directivity does not support non-uniform theta grids. "
+            "Use .to_uniform_theta() first to interpolate to a common grid.")
+
+    if (theta is None) != (phi is None):
+        raise ValueError(
+            "calculate_directivity requires both theta and phi, or neither "
+            "(for peak directivity).")
+
+    # Convert angles to radians for integration
+    theta_rad = np.deg2rad(theta_array)
+    phi_rad = np.deg2rad(phi_array)
+
+    if len(theta_rad) < 2 or len(phi_rad) < 2:
+        raise ValueError(
+            "calculate_directivity needs at least two theta and two phi samples "
+            f"to integrate power over solid angle (got {len(theta_rad)} x {len(phi_rad)}). "
+            "A single cut does not determine total radiated power.")
+
+    # Measured solid angle, using exactly the quadrature used for the power
+    # integral, so the coverage fraction and the power are consistent. This is
+    # correct for both coordinate formats: a full sided sphere (theta 0..180,
+    # phi 0..360) and a full central sphere (theta -180..180, phi 0..180) both
+    # integrate to 4*pi.
+    solid_angle_measured = _integrate_solid_angle(
+        np.ones((len(theta_rad), len(phi_rad))), theta_rad, phi_rad)
     coverage_fraction = solid_angle_measured / (4 * np.pi)
-    
+
+    if coverage_fraction > 1.0 + 1e-3:
+        # e.g. central theta with phi 0..360: every direction is sampled twice
+        logger.warning(
+            "calculate_directivity: the angular grid covers the sphere %.2f times "
+            "(theta %.1f..%.1f, phi %.1f..%.1f); power is being multiplied by that "
+            "factor. Use transform_coordinates() or split_dual_sphere() first.",
+            coverage_fraction, np.min(theta_array), np.max(theta_array),
+            np.min(phi_array), np.max(phi_array))
+
     # Get field components based on requested component
     if component == 'total':
         e_theta_data = pattern.data.e_theta.values[freq_idx, :, :]
@@ -348,41 +414,25 @@ def calculate_directivity(
     else:
         raise ValueError(f"Unknown component '{component}'. "
                         "Must be 'total', 'e_co', 'e_cx', 'e_theta', or 'e_phi'")
-    
-    # Convert angles to radians for integration
-    theta_rad = np.deg2rad(theta_array)
-    phi_rad = np.deg2rad(phi_array)
-    
-    # Create meshgrid for integration
-    theta_mesh, phi_mesh = np.meshgrid(theta_rad, phi_rad, indexing='ij')
-    
-    # Use appropriate area element - for central coordinates with theta from boresight
-    # Area element is sin(|theta|) since theta can be negative
-    area_element = np.sin(np.abs(theta_mesh))
-    
-    integrand = radiation_intensity * area_element
-    
-    # Perform numerical integration using trapezoid rule
-    dtheta = theta_rad[1] - theta_rad[0] if len(theta_rad) > 1 else 0
-    dphi = phi_rad[1] - phi_rad[0] if len(phi_rad) > 1 else 0
-    
-    # Handle single point case
-    if len(theta_rad) == 1 or len(phi_rad) == 1:
-        measured_power = np.sum(integrand) * dtheta * dphi
-    else:
-        measured_power = np.trapezoid(np.trapezoid(integrand, phi_rad, axis=1), theta_rad, axis=0)
-    
+
+    # Total radiated power always comes from the TOTAL field: partial
+    # directivity is the power in one component relative to the power radiated
+    # in all of them, so the denominator must not depend on `component`.
+    total_intensity = (np.abs(pattern.data.e_theta.values[freq_idx, :, :])**2
+                       + np.abs(pattern.data.e_phi.values[freq_idx, :, :])**2)
+    measured_power = _integrate_solid_angle(total_intensity, theta_rad, phi_rad)
+
     # Determine if we need partial sphere method
     use_partial_sphere = (coverage_fraction < partial_sphere_threshold) or (measured_power <= 0)
     
     if use_partial_sphere:
         
-        peak_intensity = np.max(radiation_intensity)
+        peak_intensity = np.max(total_intensity)
 
         # Estimate power in unmeasured regions
         if far_sidelobe_level_db is not None:
             # Use far sidelobe assumption - more accurate for antenna patterns
-            peak_intensity = np.max(radiation_intensity)
+            peak_intensity = np.max(total_intensity)
             far_sidelobe_intensity = peak_intensity * (10 ** (far_sidelobe_level_db / 10))
             
             # Calculate unmeasured solid angle
@@ -396,10 +446,10 @@ def calculate_directivity(
             edge_values = []
             # Theta edges
             if len(theta_rad) > 1:
-                edge_values.extend([radiation_intensity[0, :], radiation_intensity[-1, :]])
+                edge_values.extend([total_intensity[0, :], total_intensity[-1, :]])
             # Phi edges  
             if len(phi_rad) > 1:
-                edge_values.extend([radiation_intensity[:, 0], radiation_intensity[:, -1]])
+                edge_values.extend([total_intensity[:, 0], total_intensity[:, -1]])
             
             if edge_values:
                 edge_power_linear = np.mean([np.mean(edge) for edge in edge_values])
@@ -429,7 +479,7 @@ def calculate_directivity(
     # Convert to dB
     directivity_db = 10 * np.log10(np.maximum(directivity_linear, 1e-15))
     
-    if theta is not None and phi is not None:
+    if theta is not None:
         # Calculate directivity at specific direction
         theta_val, theta_idx = find_nearest(theta_array, theta)
         phi_val, phi_idx = find_nearest(phi_array, phi)

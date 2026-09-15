@@ -2,6 +2,8 @@
 Core class for far-field spherical antenna pattern representation and manipulation.
 """
 import warnings
+import copy
+
 import numpy as np
 import xarray as xr
 from typing import Optional, Union, Tuple, Dict, Any, Set, Generator, Sequence
@@ -442,15 +444,24 @@ class FarFieldSpherical(FarFieldOperationsMixin):
         else:
             theta_param = self.data.theta.values.copy()
 
-        return FarFieldSpherical(
+        new_pattern = FarFieldSpherical(
             theta=theta_param,
             phi=self.phi_angles.copy(),
             frequency=self.frequencies.copy(),
             e_theta=self.data.e_theta.values.copy(),
             e_phi=self.data.e_phi.values.copy(),
             polarization=self.polarization,
-            metadata=self.metadata.copy() if self.metadata else None
+            # deep copy: a shallow copy shares the 'operations' list, so an
+            # operation recorded on the copy would also appear on the original
+            metadata=copy.deepcopy(self.metadata) if self.metadata else None
         )
+
+        # Carry over spherical wave expansion coefficients, which are attached
+        # dynamically by the .sph / .npz readers rather than held in .data.
+        if getattr(self, 'swe', None):
+            new_pattern.swe = dict(self.swe)
+
+        return new_pattern
     
     def assign_polarization(self, polarization: Optional[str] = None) -> None:
         """
