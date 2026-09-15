@@ -115,32 +115,25 @@ def write_cut(pattern, file_path: Union[str, Path], polarization_format: int = 1
                 # Write cut header: theta_start, theta_step, num_theta, phi, icomp, icut, ncomp
                 f.write(f"{theta_start:.2f} {theta_step:.6f} {num_theta} {phi_val:.2f} {polarization_format} {icut} {ncomp}\n")
 
-                # Convert field components based on polarization format
-                for theta_idx in range(len(theta)):
-                    if polarization_format == 1:
-                        comp1 = e_theta[freq_idx, theta_idx, phi_idx]
-                        comp2 = e_phi[freq_idx, theta_idx, phi_idx]
+                # Convert the whole cut in one call rather than one theta
+                # sample at a time, and write it as a single block.
+                cut_theta = e_theta[freq_idx, :, phi_idx]
+                cut_phi = e_phi[freq_idx, :, phi_idx]
 
-                    elif polarization_format == 2:
-                        e_r, e_l = polarization_tp2rl(
-                            phi_val,
-                            e_theta[freq_idx, theta_idx, phi_idx:phi_idx+1],
-                            e_phi[freq_idx, theta_idx, phi_idx:phi_idx+1]
-                        )
-                        comp1 = e_r[0]  # RHCP
-                        comp2 = e_l[0]  # LHCP
+                if polarization_format == 1:
+                    comp1, comp2 = cut_theta, cut_phi
+                elif polarization_format == 2:
+                    comp1, comp2 = polarization_tp2rl(phi_val, cut_theta, cut_phi)
+                elif polarization_format == 3:
+                    comp1, comp2 = polarization_tp2xy(phi_val, cut_theta, cut_phi)
+                else:
+                    raise ValueError(
+                        f"Invalid polarization_format {polarization_format}; "
+                        "expected 1 (theta/phi), 2 (RHCP/LHCP) or 3 (Ludwig-3 x/y).")
 
-                    elif polarization_format == 3:
-                        e_x, e_y = polarization_tp2xy(
-                            phi_val,
-                            e_theta[freq_idx, theta_idx, phi_idx:phi_idx+1],
-                            e_phi[freq_idx, theta_idx, phi_idx:phi_idx+1]
-                        )
-                        comp1 = e_x[0]  # X component
-                        comp2 = e_y[0]  # Y component
-
-                    # Write complex components
-                    f.write(f"{comp1.real:.6e} {comp1.imag:.6e} {comp2.real:.6e} {comp2.imag:.6e}\n")
+                block = np.column_stack([np.real(comp1), np.imag(comp1),
+                                         np.real(comp2), np.imag(comp2)])
+                np.savetxt(f, block, fmt='%.6e', delimiter=' ')
 
 def write_ffd(pattern, file_path: Union[str, Path]) -> None:
     """
@@ -182,15 +175,14 @@ def write_ffd(pattern, file_path: Union[str, Path]) -> None:
         for freq_idx, freq in enumerate(frequencies):
             f.write(f"Frequency {freq}\n")
             
-            # Write field data for all theta/phi combinations
-            # FFD format: theta is outer loop, phi is inner loop (opposite of what I had)
-            for theta_idx in range(len(theta)):
-                for phi_idx in range(len(phi)):
-                    # Convert to HFSS units (multiply by sqrt(60))
-                    eth = e_theta[freq_idx, theta_idx, phi_idx] * np.sqrt(60)
-                    eph = e_phi[freq_idx, theta_idx, phi_idx] * np.sqrt(60)
-                    
-                    f.write(f"{eth.real:.6e} {eth.imag:.6e} {eph.real:.6e} {eph.imag:.6e}\n")
+            # Field data for all theta/phi combinations, theta varying slowest,
+            # written as one block. Values are converted to the HFSS convention
+            # (rE in volts) by multiplying by sqrt(60); read_ffd divides it back
+            # out, so the round trip preserves absolute level.
+            eth = (e_theta[freq_idx] * np.sqrt(60)).ravel()
+            eph = (e_phi[freq_idx] * np.sqrt(60)).ravel()
+            block = np.column_stack([eth.real, eth.imag, eph.real, eph.imag])
+            np.savetxt(f, block, fmt='%.6e', delimiter=' ')
 
 def write_ticra_sph(swe: 'SphericalWaveExpansion', file_path: Union[str, Path],
                     program_tag: str = "AntPy", id_string: str = "SWE Export") -> None:

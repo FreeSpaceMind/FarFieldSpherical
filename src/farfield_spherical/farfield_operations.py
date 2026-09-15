@@ -68,10 +68,19 @@ class FarFieldOperationsMixin:
         Shifts the antenna phase pattern to place the origin at the location defined by the shift.
 
         This applies a linear phase shift to the pattern corresponding to a translation
-        of the phase center. The phase shift is frequency-dependent.
+        of the phase center. The phase shift is frequency-dependent:
+
+            E'(theta, phi) = E(theta, phi) * exp(-j k (r_hat . d))
+
+        with r_hat the unit direction and d the translation. The direction uses
+        the signed theta, so central-format patterns are handled correctly.
 
         Args:
             translation: 3D translation vector [x, y, z] in meters
+
+        Raises:
+            ValueError: If translation is not three numbers
+            NotImplementedError: If the pattern has non-uniform theta grids
 
         Note:
             This modifies the pattern in-place.
@@ -79,41 +88,42 @@ class FarFieldOperationsMixin:
         """
         self._require_uniform_theta('translate')
 
-        from .pattern_operations import phase_pattern_translate
+        # Validate before touching the data: this used to raise on the metadata
+        # record at the end, after the fields had already been modified.
+        translation = np.asarray(translation, dtype=float).ravel()
+        if translation.size != 3:
+            raise ValueError(
+                f"translate expects a 3-element [x, y, z] vector in metres, "
+                f"got {translation.size} value(s).")
 
-        # Convert angles to radians for phase_pattern_translate
-        theta_rad = np.radians(self.theta_angles)
-        phi_rad = np.radians(self.phi_angles)
-        
-        # Apply translation to each frequency
-        for freq_idx, freq in enumerate(self.frequencies):
-            # Apply phase shift to theta component
-            phase_e_theta = np.angle(self.data.e_theta.values[freq_idx])
-            shifted_phase_theta = phase_pattern_translate(
-                freq, theta_rad, phi_rad, translation, phase_e_theta
-            )
-            mag_e_theta = np.abs(self.data.e_theta.values[freq_idx])
-            self.data.e_theta.values[freq_idx] = mag_e_theta * np.exp(1j * shifted_phase_theta)
-            
-            # Apply phase shift to phi component  
-            phase_e_phi = np.angle(self.data.e_phi.values[freq_idx])
-            shifted_phase_phi = phase_pattern_translate(
-                freq, theta_rad, phi_rad, translation, phase_e_phi
-            )
-            mag_e_phi = np.abs(self.data.e_phi.values[freq_idx])
-            self.data.e_phi.values[freq_idx] = mag_e_phi * np.exp(1j * shifted_phase_phi)
-        
+        theta_rad = np.radians(np.asarray(self.theta_angles, dtype=float))[:, None]
+        phi_rad = np.radians(np.asarray(self.phi_angles, dtype=float))[None, :]
+        sin_theta = np.sin(theta_rad)
+
+        # r_hat . d over the grid, shape (theta, phi)
+        path_length = (translation[0] * sin_theta * np.cos(phi_rad)
+                       + translation[1] * sin_theta * np.sin(phi_rad)
+                       + translation[2] * np.cos(theta_rad) * np.ones_like(phi_rad))
+
+        wavenumber = 2 * np.pi * np.asarray(self.frequencies, dtype=float) / lightspeed
+        phase_shift = np.exp(-1j * wavenumber[:, None, None] * path_length[None, :, :])
+
+        # Multiply the complex field directly. The previous implementation took
+        # np.angle, shifted it and rebuilt magnitude * exp(j phase) per
+        # frequency in a Python loop, which cost precision and discarded the
+        # distinction between a true zero and a very small value.
+        self.data['e_theta'].values = (self.data.e_theta.values * phase_shift).astype(np.complex64)
+        self.data['e_phi'].values = (self.data.e_phi.values * phase_shift).astype(np.complex64)
+
         # Recompute co/cx polarization
         self.assign_polarization(self.polarization)
-        
+
         # Clear cache
         self.clear_cache()
-        
+
         # Update metadata
         if hasattr(self, 'metadata') and self.metadata is not None:
-            if 'operations' not in self.metadata:
-                self.metadata['operations'] = []
-            self.metadata['operations'].append({
+            self.metadata.setdefault('operations', []).append({
                 'type': 'translate',
                 'translation': translation.tolist()
             })

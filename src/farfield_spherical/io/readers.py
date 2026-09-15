@@ -333,21 +333,20 @@ def read_ffd(file_path: Union[str, Path], frequency_hz: Optional[float] = None):
     e_theta_np = np.array(e_theta_list)
     e_phi_np = np.array(e_phi_list)
 
-    # Reshape into 3D (freq, theta, phi) format
-    e_theta_final = np.zeros((len(frequency_np), len(theta), len(phi)), dtype=complex)
-    e_phi_final = np.zeros((len(frequency_np), len(theta), len(phi)), dtype=complex)
-    
-    
-    for freq_idx in range(len(frequency_np)):
-        # Process each theta/phi combination for this frequency
-        for theta_idx in range(len(theta)):
-            for phi_idx in range(len(phi)):
-                # Reversed indexing formula
-                data_idx = theta_idx * len(phi) + phi_idx
-                
-                if data_idx < len(e_theta_np[freq_idx]):
-                    e_theta_final[freq_idx, theta_idx, phi_idx] = e_theta_np[freq_idx][data_idx]
-                    e_phi_final[freq_idx, theta_idx, phi_idx] = e_phi_np[freq_idx][data_idx]
+    # Reshape into 3D (freq, theta, phi) format. The file stores theta
+    # varying slowest and phi fastest, so a plain reshape is enough; the old
+    # triple loop also silently left zeros when a block was short.
+    expected = len(theta) * len(phi)
+    for freq_idx, block in enumerate(e_theta_list):
+        if len(block) != expected:
+            raise ValueError(
+                f"Frequency block {freq_idx + 1} holds {len(block)} samples but the "
+                f"header declares {len(theta)} x {len(phi)} = {expected}.")
+
+    e_theta_final = np.asarray(e_theta_list, dtype=complex).reshape(
+        len(frequency_np), len(theta), len(phi))
+    e_phi_final = np.asarray(e_phi_list, dtype=complex).reshape(
+        len(frequency_np), len(theta), len(phi))
 
     # Create FarFieldSpherical - polarization will be auto-detected
     return FarFieldSpherical(
@@ -531,9 +530,15 @@ def read_atams(file_path: Union[str, Path], interpolate: bool = False,
         for theta_idx, block in enumerate(blocks):
             theta_grid[theta_idx, phi_idx] = block['az_actual']
 
-            # Convert dB + phase to complex linear
-            # E = 10^(mag_db/20) * exp(-j * phase_deg * pi/180)
-            # Conjugate phase to match expected convention
+            # Convert dB + phase to complex linear:
+            #     E = 10^(mag_db/20) * exp(-j * phase_deg * pi/180)
+            #
+            # The phase is negated deliberately. ATAMS uses the exp(+j w t)
+            # time convention while this package (like the CUT and FFD readers)
+            # uses exp(-j w t), and the two differ by a complex conjugate. Do
+            # not "simplify" this sign away: it would mirror every
+            # phase-sensitive result (translate, find_phase_center, apply_mars)
+            # in z for ATAMS data relative to data from the other readers.
             e_theta_linear = 10 ** (block['theta_mag_db'] / 20) * np.exp(
                 -1j * np.deg2rad(block['theta_phase_deg'])
             )
