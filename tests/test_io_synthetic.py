@@ -143,6 +143,49 @@ class TestCutRoundTrip:
         with pytest.raises(FileNotFoundError):
             read_cut(tmp_path / "nope.cut", frequency_start=1e9, frequency_end=2e9)
 
+    def test_frequencies_come_from_the_file(self, tmp_path):
+        """Each cut records its own frequency; the caller's range is only a
+        fallback. Passing a wrong range must not change the result."""
+        pattern = make_io_pattern(theta=np.arange(-180, 181, 10.0),
+                                  phi=np.arange(0, 180, 30.0))
+        path = tmp_path / "pattern.cut"
+        write_cut(pattern, path)
+        result = read_cut(path, frequency_start=1e9, frequency_end=2e9)
+        np.testing.assert_allclose(result.frequencies, FREQS, rtol=1e-6)
+
+    def test_cuts_out_of_phi_order(self, tmp_path):
+        """Cuts used to be placed by position in the file against a sorted phi
+        list, so a file written in another order stored every cut under the
+        wrong angle."""
+        pattern = make_io_pattern(theta=np.arange(-180, 181, 10.0),
+                                  phi=np.arange(0, 180, 30.0), freqs=[FREQ_START])
+        path = tmp_path / "ordered.cut"
+        write_cut(pattern, path)
+
+        # Re-emit the same cuts with the phi blocks reversed
+        text = path.read_text().splitlines()
+        n_theta = len(pattern.theta_angles)
+        block = n_theta + 2                      # description + header + data
+        blocks = [text[i:i + block] for i in range(0, len(text), block)]
+        shuffled = tmp_path / "shuffled.cut"
+        shuffled.write_text("\n".join(line for b in reversed(blocks) for line in b) + "\n")
+
+        result = read_cut(shuffled, frequency_start=FREQ_START, frequency_end=FREQ_START)
+        np.testing.assert_allclose(result.phi_angles, pattern.phi_angles, atol=1e-6)
+        assert_fields_close(pattern, result)
+
+    def test_truncated_file_raises(self, tmp_path):
+        pattern = make_io_pattern(theta=np.arange(-180, 181, 10.0),
+                                  phi=np.arange(0, 180, 30.0))
+        path = tmp_path / "pattern.cut"
+        write_cut(pattern, path)
+        lines = path.read_text().splitlines()
+        n_theta = len(pattern.theta_angles)
+        truncated = tmp_path / "truncated.cut"
+        truncated.write_text("\n".join(lines[:-(n_theta + 2)]) + "\n")
+        with pytest.raises(ValueError, match='truncated|whole number'):
+            read_cut(truncated, frequency_start=FREQ_START, frequency_end=FREQ_END)
+
 
 class TestNpzRoundTrip:
     def test_fields_grid_and_polarization_survive(self, tmp_path):

@@ -280,6 +280,18 @@ def detect_dual_sphere(pattern: FarFieldSpherical) -> Dict[str, Any]:
         result['message'] = 'Non-uniform theta grid'
         return result
 
+    # A dual-sphere measurement is two half-spheres recorded by rotating the
+    # antenna, so it is central format (signed theta) with phi spanning the
+    # full circle. An ordinary complete sided pattern also spans 0-360 in phi
+    # and used to be reported as dual sphere; splitting one then produced a
+    # "sphere 2" with theta -180..0 that average_patterns could not combine.
+    theta_angles = pattern.theta_angles
+    if np.min(theta_angles) > -0.5:
+        result['message'] = (
+            'Theta is non-negative (sided format), so the full phi range is an '
+            'ordinary complete sphere rather than two measured half-spheres')
+        return result
+
     phi = pattern.phi_angles
 
     # Check phi range: must span approximately 0-360

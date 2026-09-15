@@ -183,6 +183,8 @@ class FarFieldOperationsMixin:
             reference_theta: Reference theta angle in degrees (default: 0)
             reference_phi: Reference phi angle in degrees (default: 0)
         """
+        self._require_uniform_theta('normalize_phase')
+
         
         # Get underlying numpy arrays
         frequency = self.data.frequency.values
@@ -522,6 +524,20 @@ class FarFieldOperationsMixin:
         Returns:
             New FarFieldSpherical object at interpolated frequencies
         """
+
+        if len(self.frequencies) < 2:
+            raise ValueError(
+                "interpolate_frequency needs at least two frequencies to "
+                f"interpolate between (this pattern has {len(self.frequencies)}).")
+
+        new_frequencies = np.atleast_1d(np.asarray(new_frequencies, dtype=float))
+        f_min, f_max = float(np.min(self.frequencies)), float(np.max(self.frequencies))
+        if np.any(new_frequencies < f_min) or np.any(new_frequencies > f_max):
+            logger.warning(
+                "interpolate_frequency: requested frequencies extend outside the "
+                "measured band %.4g to %.4g Hz; those values are extrapolated.",
+                f_min, f_max)
+
         self._require_uniform_theta('interpolate_frequency')
 
         # Interpolate complex fields
@@ -844,6 +860,8 @@ class FarFieldOperationsMixin:
         at boresight (theta=0). The reference amplitude is the median magnitude
         across all phi cuts, and the reference phase is from the first phi cut.
         """
+        self._require_uniform_theta('normalize_at_boresight')
+
         # Get underlying numpy arrays
         frequency = self.data.frequency.values
         theta = self.data.theta.values
@@ -1291,7 +1309,10 @@ class FarFieldOperationsMixin:
         else:
             # Create new phi array with specified step
             target_phi = np.arange(phi_min, phi_max + phi_step/2, phi_step)
-            target_phi = np.mod(target_phi, 360)  # Normalize to 0-360
+
+        # A request such as phi_range=(0, 360) ends on 360, which wraps onto 0
+        # and would otherwise leave the phi axis non-monotonic and duplicated.
+        target_phi = np.unique(np.mod(target_phi, 360.0))
         
         # Find nearest indices for each target angle
         theta_indices = []

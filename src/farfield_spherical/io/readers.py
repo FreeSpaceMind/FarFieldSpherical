@@ -1,8 +1,11 @@
 from pathlib import Path
 from typing import Union, Optional, Iterable
 import re
+import logging
 import numpy as np
 from ..farfield import FarFieldSpherical
+
+logger = logging.getLogger(__name__)
 
 try:
     from swe import SphericalWaveExpansion  # pyright: ignore[reportMissingImports]
@@ -83,14 +86,19 @@ def read_cut(file_path: Union[str, Path], frequency_start: float, frequency_end:
     data_counter = 0
     line_data_a = []
     line_data_b = []
+    cut_frequencies = []
     
     while line_index < total_lines:
         data_str = lines[line_index]
         line_index += 1
         
         if "MHz" in data_str:
-            # This is a description line for a new cut
+            # Description line for a new cut. GRASP writes the frequency here
+            # (and so does write_cut), which is more reliable than assuming the
+            # cuts are evenly spaced between frequency_start and frequency_end.
             header_flag = True
+            match = re.search(r"([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*MHz", data_str)
+            cut_frequencies.append(float(match.group(1)) * 1e6 if match else None)
             continue
             
         if header_flag:
@@ -117,9 +125,9 @@ def read_cut(file_path: Union[str, Path], frequency_start: float, frequency_end:
                 if icomp not in [1, 2, 3]:
                     raise ValueError(f"Invalid polarization format (ICOMP): {icomp}")
                 if icut != 1:
-                    print(f"Unexpected ICUT value: {icut}. Expected 1 (standard polar cut)")
+                    logger.warning("Unexpected ICUT value: %s. Expected 1 (standard polar cut)", icut)
                 if ncomp != 2:
-                    print(f"Unexpected NCOMP value: {ncomp}. Expected 2 (two field components)")
+                    logger.warning("Unexpected NCOMP value: %s. Expected 2 (two field components)", ncomp)
                     
                 first_flag = False
             
@@ -130,7 +138,7 @@ def read_cut(file_path: Union[str, Path], frequency_start: float, frequency_end:
             data_counter = theta_length
             header_flag = False
         else:
-            parts = np.fromstring(data_str, dtype=float, sep=" ")
+            parts = np.array(data_str.split(), dtype=float)
             if len(parts) >= 4:
                 line_data_a.append(complex(parts[0], parts[1]))
                 line_data_b.append(complex(parts[2], parts[3]))
@@ -145,34 +153,38 @@ def read_cut(file_path: Union[str, Path], frequency_start: float, frequency_end:
     if len(ya_data) == 0 or len(yb_data) == 0:
         raise ValueError("No valid data found in CUT file")
     
-    # Make frequency vector more accurately
-    phi_array = np.array(phi)
+    phi_array = np.array(phi, dtype=float)
     unique_phi = np.sort(np.unique(phi_array))
-    freq_num = len(ya_data) // len(unique_phi)
-    
+    num_phi = len(unique_phi)
+    num_theta = len(theta)
+
+    if len(ya_data) % num_phi != 0:
+        raise ValueError(
+            f"CUT file holds {len(ya_data)} cuts, which is not a whole number of "
+            f"frequency blocks of {num_phi} phi cuts. The file may be truncated.")
+    freq_num = len(ya_data) // num_phi
+
     if freq_num <= 0:
         raise ValueError(f"Invalid frequency count: {freq_num}")
-    
+
+    # Prefer the frequency recorded on each cut's description line; fall back to
+    # spreading the caller's range evenly when the file does not carry them.
     frequency = np.linspace(frequency_start, frequency_end, freq_num)
-    
-    # Convert to numpy arrays efficiently - specify dtype for better performance
-    ya_np = np.array(ya_data, dtype=complex)
-    yb_np = np.array(yb_data, dtype=complex)
-    
-    # Determine the correct shape
-    num_theta = len(theta)
-    num_phi = len(unique_phi)
-    
-    # Use optimized reshape approach with direct indexing
+    if len(cut_frequencies) == len(ya_data) and all(f is not None for f in cut_frequencies):
+        block_frequencies = np.array(cut_frequencies[::num_phi], dtype=float)
+        if len(block_frequencies) == freq_num:
+            frequency = block_frequencies
+
     e_theta = np.zeros((freq_num, num_theta, num_phi), dtype=complex)
     e_phi = np.zeros((freq_num, num_theta, num_phi), dtype=complex)
-    
-    # Custom reshape logic for the specific data structure
+
+    # Place each cut at its recorded phi value rather than at its position in
+    # the file: GRASP does not guarantee that cuts are written in ascending phi.
     for i in range(len(ya_data)):
         freq_idx = i // num_phi
-        phi_idx = i % num_phi
-        
-        if freq_idx < freq_num and phi_idx < num_phi:
+        phi_idx = int(np.argmin(np.abs(unique_phi - phi_array[i])))
+
+        if freq_idx < freq_num:
             e_theta[freq_idx, :, phi_idx] = ya_data[i]
             e_phi[freq_idx, :, phi_idx] = yb_data[i]
     

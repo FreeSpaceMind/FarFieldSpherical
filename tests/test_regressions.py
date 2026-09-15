@@ -178,6 +178,80 @@ class TestSwapPolarizationAxes:
         assert len(p.metadata['operations']) == before + 1
 
 
+class TestValidation:
+    def test_interpolate_frequency_needs_two_frequencies(self):
+        """A single frequency produced an all-NaN pattern and a scipy warning."""
+        p = make(TH_S, PHI_S)
+        single = FarFieldSpherical(TH_S, PHI_S, FREQS[:1],
+                                   p.data.e_theta.values[:1], p.data.e_phi.values[:1],
+                                   polarization='x')
+        with pytest.raises(ValueError, match='at least two frequencies'):
+            single.interpolate_frequency(np.array([8.5e9]))
+
+    def test_interpolate_frequency_warns_on_extrapolation(self, caplog):
+        p = make(TH_S, PHI_S)
+        with caplog.at_level(logging.WARNING, logger='farfield_spherical.farfield_operations'):
+            p.interpolate_frequency(np.array([FREQS[0] * 0.5]))
+        assert 'extrapolated' in caplog.text
+
+    def test_subsample_phi_endpoint_does_not_wrap_onto_zero(self):
+        """phi_range=(0, 360) ended on 360, which wrapped onto 0 and left the
+        phi axis non-monotonic with a duplicate."""
+        p = make(TH_S, PHI_S)
+        q = p.subsample(phi_range=(0.0, 360.0), phi_step=30.0)
+        phi = q.phi_angles
+        assert len(np.unique(phi)) == len(phi)
+        assert np.all(np.diff(phi) > 0)
+        assert phi.max() < 360.0
+
+    def test_normalize_phase_rejects_non_uniform_theta(self):
+        """The theta coordinate holds indices for a non-uniform pattern, so
+        using it as degrees gave silently wrong results."""
+        theta_grid = np.stack([TH_S, TH_S + 1.0], axis=1)
+        e = np.ones((1, len(TH_S), 2), dtype=complex)
+        p = FarFieldSpherical(theta_grid, np.array([0.0, 90.0]), FREQS[:1], e, e,
+                              polarization='x')
+        assert not p.has_uniform_theta
+        with pytest.raises(NotImplementedError, match='normalize_phase'):
+            p.normalize_phase()
+        with pytest.raises(NotImplementedError, match='normalize_at_boresight'):
+            p.normalize_at_boresight()
+
+    def test_directivity_rejects_non_uniform_theta(self):
+        theta_grid = np.stack([TH_S, TH_S + 1.0], axis=1)
+        e = np.ones((1, len(TH_S), 2), dtype=complex)
+        p = FarFieldSpherical(theta_grid, np.array([0.0, 90.0]), FREQS[:1], e, e,
+                              polarization='x')
+        with pytest.raises(NotImplementedError, match='non-uniform'):
+            calculate_directivity(p, frequency=FREQS[0])
+
+    def test_copy_history_is_not_shared_by_to_uniform_theta(self):
+        theta_grid = np.stack([TH_S, TH_S], axis=1)
+        e = np.ones((1, len(TH_S), 2), dtype=complex)
+        p = FarFieldSpherical(theta_grid, np.array([0.0, 90.0]), FREQS[:1], e, e,
+                              polarization='x')
+        before = len(p.metadata.get('operations', []))
+        p.to_uniform_theta()
+        assert len(p.metadata.get('operations', [])) == before
+
+
+class TestDualSphere:
+    def test_complete_sided_sphere_is_not_dual(self):
+        """Any full sided sphere used to be reported as a dual measurement."""
+        from farfield_spherical import detect_dual_sphere
+
+        p = make(TH_S, np.arange(0, 360, 10.0))
+        result = detect_dual_sphere(p)
+        assert result['is_dual_sphere'] is False
+        assert 'sided' in result['message']
+
+    def test_central_full_phi_is_dual(self):
+        from farfield_spherical import detect_dual_sphere
+
+        p = make(TH_C, np.arange(0, 360, 10.0))
+        assert detect_dual_sphere(p)['is_dual_sphere'] is True
+
+
 class TestPackageFunctions:
     def test_difference_does_not_mutate_input(self):
         """difference_patterns used to convert the caller's pattern2 in place."""

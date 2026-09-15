@@ -306,6 +306,16 @@ class FarFieldSpherical(FarFieldOperationsMixin):
             # Use median step across all cuts
             step = np.median(theta_steps) if theta_steps else 1.0
 
+            if step <= 0:
+                raise ValueError(
+                    f"to_uniform_theta: the median theta step across the phi cuts "
+                    f"is {step:g}. Every cut's theta must ascend.")
+            if theta_max <= theta_min:
+                raise ValueError(
+                    f"to_uniform_theta: the phi cuts have no theta range in common "
+                    f"(the widest common range is {theta_min:g} to {theta_max:g} "
+                    f"degrees). Pass an explicit theta grid to interpolate onto.")
+
             # Generate uniform theta array
             theta = np.arange(theta_min, theta_max + step / 2, step)
 
@@ -359,7 +369,9 @@ class FarFieldSpherical(FarFieldOperationsMixin):
                 e_phi_new[freq_idx, :, phi_idx] = interp_real(theta) + 1j * interp_imag(theta)
 
         # Build metadata
-        new_metadata = self.metadata.copy() if self.metadata else {'operations': []}
+        # Deep copy: a shallow one shares the 'operations' list, so the record
+        # appended below would also land in the source pattern's history.
+        new_metadata = copy.deepcopy(self.metadata) if self.metadata else {'operations': []}
         if 'operations' not in new_metadata:
             new_metadata['operations'] = []
         new_metadata['operations'].append({
