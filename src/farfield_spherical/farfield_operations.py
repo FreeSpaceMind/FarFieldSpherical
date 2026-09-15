@@ -1327,19 +1327,6 @@ class FarFieldOperationsMixin:
         new_e_theta = self.data.e_theta.values[freq_grid, theta_grid, phi_grid]
         new_e_phi = self.data.e_phi.values[freq_grid, theta_grid, phi_grid]
         
-        # Create new xarray Dataset
-        new_data = xr.Dataset(
-            data_vars={
-                'e_theta': (('frequency', 'theta', 'phi'), new_e_theta),
-                'e_phi': (('frequency', 'theta', 'phi'), new_e_phi),
-            },
-            coords={
-                'theta': actual_theta,
-                'phi': actual_phi,
-                'frequency': orig_freq,
-            }
-        )
-        
         # Build a fully initialised instance (going through __init__ so that
         # _theta_grid, the cache and the co/cross components all exist).
         new_pattern = type(self)(

@@ -35,6 +35,32 @@ def _ensure_uniform_theta(pattern, format_name: str):
     )
     return pattern.to_uniform_theta()
 
+def _require_uniform_axis(values, name: str, file_format: str) -> float:
+    """
+    Check that an angle axis is uniformly spaced and return its step.
+
+    Both the CUT and FFD headers store only (start, stop/step, count), and the
+    readers rebuild the axis with linspace, so a non-uniform axis would be
+    written out onto angles it was never sampled at.
+
+    Raises:
+        ValueError: If the axis is not uniformly spaced
+    """
+    import numpy as np
+
+    values = np.asarray(values, dtype=float)
+    if len(values) < 2:
+        return 1.0
+    steps = np.diff(values)
+    if not np.allclose(steps, steps[0], atol=1e-6):
+        raise ValueError(
+            f"{file_format} stores {name} as a start/step/count triple, so the "
+            f"{name} axis must be uniformly spaced (found steps from "
+            f"{steps.min():.6g} to {steps.max():.6g} degrees). Use "
+            f".to_uniform_theta() or .subsample() to resample first.")
+    return float(steps[0])
+
+
 def write_cut(pattern, file_path: Union[str, Path], polarization_format: int = 1) -> None:
     """
     Write an antenna pattern to GRASP CUT format.
@@ -73,7 +99,7 @@ def write_cut(pattern, file_path: Union[str, Path], polarization_format: int = 1
     from ..polarization import polarization_tp2rl, polarization_tp2xy
 
     theta_start = theta[0]
-    theta_step = theta[1] - theta[0] if len(theta) > 1 else 1.0
+    theta_step = _require_uniform_axis(theta, 'theta', 'The CUT format')
     num_theta = len(theta)
     icut = 1   # Standard polar cut (phi fixed, theta varying)
     ncomp = 2  # Two field components
@@ -143,6 +169,9 @@ def write_ffd(pattern, file_path: Union[str, Path]) -> None:
     e_theta = pattern.data.e_theta.values
     e_phi = pattern.data.e_phi.values
     
+    _require_uniform_axis(theta, 'theta', 'The FFD format')
+    _require_uniform_axis(phi, 'phi', 'The FFD format')
+
     with open(file_path, 'w') as f:
         # Write header lines
         f.write(f"{theta[0]} {theta[-1]} {len(theta)}\n")

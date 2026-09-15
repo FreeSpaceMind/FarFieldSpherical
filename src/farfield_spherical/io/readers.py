@@ -210,12 +210,14 @@ def read_cut(file_path: Union[str, Path], frequency_start: float, frequency_end:
         e_phi=e_phi
     )
 
-def read_ffd(file_path: Union[str, Path]):
+def read_ffd(file_path: Union[str, Path], frequency_hz: Optional[float] = None):
     """
     Read a far field data file from HFSS.
     
     Args:
         file_path: Path to the FFD file
+        frequency_hz: Frequency in Hz, used only when a single-frequency file
+            omits its 'Frequency' line
         
     Returns:
         FarFieldSpherical: The imported antenna pattern
@@ -266,10 +268,25 @@ def read_ffd(file_path: Union[str, Path]):
             raise ValueError(f"Unexpected end of file at frequency {freq_idx+1}")
             
         freq_line = lines[index].strip().split()
-        if len(freq_line) < 2:
+        # Some single-frequency HFSS exports omit the "Frequency <Hz>" line and
+        # start the data immediately. Only consume the line when it really is
+        # one, so the first data row is not parsed as a frequency.
+        has_frequency_line = (len(freq_line) >= 2
+                              and freq_line[0].lower().startswith('freq'))
+        if has_frequency_line:
+            frequency = float(freq_line[1])
+        elif num_frequencies == 1 and frequency_hz is not None:
+            # Some single-frequency HFSS exports omit the "Frequency <Hz>" line
+            # and start the data immediately; the caller has supplied it.
+            frequency = float(frequency_hz)
+            index -= 1   # the index += 1 below re-reads this line as data
+        elif not has_frequency_line:
+            raise ValueError(
+                f"No 'Frequency <Hz>' line before the data block at line "
+                f"{index + 1} of {file_path.name}. Some exports omit it; pass "
+                f"frequency_hz=<value> to read_ffd to supply it.")
+        else:
             raise ValueError(f"Invalid frequency line: {lines[index].strip()}")
-            
-        frequency = float(freq_line[1])
         e_theta = []
         e_phi = []
 
