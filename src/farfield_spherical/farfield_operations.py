@@ -862,188 +862,214 @@ class FarFieldOperationsMixin:
                 'new_phi_range': [float(np.min(new_phi)), float(np.max(new_phi))]
             })
 
-    def normalize_at_boresight(self) -> None:
+    def normalize_at_boresight(self, weak_component_ratio: float = 0.1) -> None:
         """
-        Normalize the pattern at boresight using Ludwig's III (e_x, e_y) components.
+        Remove cut-to-cut gain and phase offsets using the boresight sample.
 
-        Each phi cut is scaled so that all cuts have the same amplitude and phase
-        at boresight (theta=0). The reference amplitude is the median magnitude
-        across all phi cuts, and the reference phase is from the first phi cut.
+        Every phi cut passes through boresight (theta = 0), which is a single
+        physical direction, so the Ludwig-3 components e_x(0, phi) and
+        e_y(0, phi) should be identical for all phi. Any spread across cuts at
+        boresight is a per-cut measurement offset (a gain or phase drift
+        between cuts), and each cut is scaled by one complex factor so that
+        its boresight sample lands on a common reference.
+
+        The reference magnitude is the median across cuts and the reference
+        phase is the circular (vector) mean of the boresight samples, so a set
+        of phases straddling +/-180 degrees is handled correctly; a linear
+        median of wrapped angles would put the reference near 0 and rotate the
+        whole pattern.
+
+        For each cut the correction is derived from the dominant component,
+        the one with the larger median boresight magnitude. A component whose
+        median boresight magnitude is below ``weak_component_ratio`` times
+        the dominant one (10 %, i.e. 20 dB down, by default) is the cross-pol
+        of a linearly polarized antenna and its boresight value is noise;
+        deriving a correction from it would divide by that noise and apply an
+        arbitrary complex gain to the whole cut. Such a component borrows the
+        dominant component's correction instead. When both components are
+        significant (dual-pol or circular), each is corrected independently.
+
+        Args:
+            weak_component_ratio: Magnitude ratio below which a component
+                borrows the other one's correction.
         """
         self._require_uniform_theta('normalize_at_boresight')
 
-        # Get underlying numpy arrays
         frequency = self.data.frequency.values
-        theta = self.data.theta.values
-        phi = self.data.phi.values
-        e_theta = self.data.e_theta.values.copy()
-        e_phi = self.data.e_phi.values.copy()
+        theta = np.asarray(self.data.theta.values, dtype=float)
+        phi = np.asarray(self.data.phi.values, dtype=float)
+        e_theta = np.asarray(self.data.e_theta.values, dtype=np.complex128)
+        e_phi = np.asarray(self.data.e_phi.values, dtype=np.complex128)
 
-        # Find boresight index
-        theta0_idx = np.argmin(np.abs(theta))
+        theta0_idx = int(np.argmin(np.abs(theta)))
 
-        # Process each frequency separately
+        def cut_corrections(boresight):
+            """One complex factor per cut mapping its boresight sample to the reference."""
+            magnitude = np.abs(boresight)
+            reference = np.median(magnitude) * np.exp(1j * np.angle(np.sum(boresight)))
+            with np.errstate(divide='ignore', invalid='ignore'):
+                correction = np.where(magnitude > 1e-30, reference / boresight, 1.0)
+            return correction
+
         for f_idx in range(len(frequency)):
-            # Convert all theta, phi points to x, y
             e_x, e_y = polarization_tp2xy(phi, e_theta[f_idx], e_phi[f_idx])
 
-            # Get boresight values for all phi cuts
-            e_x_boresight = e_x[theta0_idx, :]
-            e_y_boresight = e_y[theta0_idx, :]
+            x_boresight = e_x[theta0_idx, :]
+            y_boresight = e_y[theta0_idx, :]
+            x_level = np.median(np.abs(x_boresight))
+            y_level = np.median(np.abs(y_boresight))
 
-            # Calculate median magnitude at boresight
-            e_x_med_mag = np.median(np.abs(e_x_boresight))
-            e_y_med_mag = np.median(np.abs(e_y_boresight))
+            x_correction = cut_corrections(x_boresight)
+            y_correction = cut_corrections(y_boresight)
 
-            # Get reference phase from median phase across phi cuts
-            e_x_ref_phase = np.median(np.angle(e_x_boresight))
-            e_y_ref_phase = np.median(np.angle(e_y_boresight))
+            # A weak component's boresight value is noise: borrow the other's.
+            dominant = max(x_level, y_level)
+            if x_level < weak_component_ratio * dominant:
+                x_correction = y_correction
+            elif y_level < weak_component_ratio * dominant:
+                y_correction = x_correction
 
-            # Normalize each phi cut
-            for p_idx in range(len(phi)):
-                # Create reference values (median magnitude and phase)
-                e_x_ref = e_x_med_mag * np.exp(1j * e_x_ref_phase)
-                e_y_ref = e_y_med_mag * np.exp(1j * e_y_ref_phase)
+            e_x = e_x * x_correction[None, :]
+            e_y = e_y * y_correction[None, :]
 
-                # Calculate correction factors (avoid division by zero)
-                if np.abs(e_x_boresight[p_idx]) > 1e-30:
-                    e_x_correction = e_x_ref / e_x_boresight[p_idx]
-                else:
-                    e_x_correction = 1.0
-                if np.abs(e_y_boresight[p_idx]) > 1e-30:
-                    e_y_correction = e_y_ref / e_y_boresight[p_idx]
-                else:
-                    e_y_correction = 1.0
+            e_theta[f_idx], e_phi[f_idx] = polarization_xy2tp(phi, e_x, e_y)
 
-                # Apply correction to all theta values for this phi
-                e_x[:, p_idx] *= e_x_correction
-                e_y[:, p_idx] *= e_y_correction
+        self.data['e_theta'].values = e_theta.astype(np.complex64)
+        self.data['e_phi'].values = e_phi.astype(np.complex64)
 
-            # Convert back to e_theta, e_phi
-            e_theta_new, e_phi_new = polarization_xy2tp(phi, e_x, e_y)
-            e_theta[f_idx] = e_theta_new
-            e_phi[f_idx] = e_phi_new
-        
-        # Update pattern data
-        self.data['e_theta'].values = e_theta
-        self.data['e_phi'].values = e_phi
-        
         # Recalculate derived components
         self.assign_polarization(self.polarization)
-        
+
         # Clear cache
         self.clear_cache()
-        
+
         # Update metadata
         if hasattr(self, 'metadata') and self.metadata is not None:
-            if 'operations' not in self.metadata:
-                self.metadata['operations'] = []
-            self.metadata['operations'].append({
-                'type': 'normalize_at_boresight',
+            self.metadata.setdefault('operations', []).append({
+                'type': 'normalize_at_boresight'
             })
 
     def apply_mars(self, maximum_radial_extent: float) -> None:
         """
-        Apply Mathematical Absorber Reflection Suppression technique.
+        Apply Mathematical Absorber Reflection Suppression (MARS).
+
+        Each phi cut is treated as a closed circle in theta and expanded in
+        cylindrical modes, i.e. a Fourier series in theta:
+
+            c_n = (1/2pi) int_0^{2pi} E(theta) e^{-j n theta} dtheta
+            E_filtered(theta) = sum_{|n| <= n_max} c_n e^{+j n theta}
+
+        An antenna of maximum radial extent D about the measurement origin
+        radiates only modes with |n| <= k D, so higher orders can only be
+        range reflections and are removed. n_max = floor(k D) per frequency.
+
+        The expansion needs every phi cut to span a full 360 degrees of theta,
+        so the pattern is processed in central format: a sided pattern is
+        converted on a copy, filtered, and the result mapped back onto its own
+        grid. The theta grid must be uniform.
+
+        For the filter to act on reflections rather than the antenna's own
+        pattern, the antenna should first be translated so that the
+        measurement origin is the pattern's phase reference; see ``translate``.
 
         Args:
-            maximum_radial_extent: Maximum radial extent of the antenna in meters
+            maximum_radial_extent: Maximum radial extent of the antenna in
+                metres, measured from the origin the pattern is referred to
+
+        Raises:
+            ValueError: If the extent is not positive, the theta grid is not
+                uniform, or the cuts cannot be closed into full circles
+            NotImplementedError: If the pattern has non-uniform theta grids
         """
         self._require_uniform_theta('apply_mars')
 
         if maximum_radial_extent <= 0:
             raise ValueError("Maximum radial extent must be positive")
-        
-        frequency = self.data.frequency.values
-        theta = self.data.theta.values
-        phi = self.data.phi.values
-        e_theta = self.data.e_theta.values.copy()
-        e_phi = self.data.e_phi.values.copy()
-        
-        # Initialize outputs
-        e_theta_new = np.empty_like(e_theta)
-        e_phi_new = np.empty_like(e_phi)
-        
-        # Apply MARS algorithm
-        for f_idx, f in enumerate(frequency):
-            # Calculate wavenumber and coefficients range
-            wavenumber = 2 * np.pi * f / lightspeed
-            max_coefficients = int(np.floor(wavenumber * maximum_radial_extent))
-            coefficients = np.arange(-max_coefficients, max_coefficients + 1, 1)
-            
-            # Create arrays for theta in radians
-            theta_rad = np.radians(theta)
-            
-            # Initialize storage arrays for cylindrical coefficients
-            CMC_1_sum = np.zeros_like(e_theta[f_idx, :, :], dtype=complex)
-            CMC_2_sum = np.zeros_like(e_phi[f_idx, :, :], dtype=complex)
-            
-            # Precompute exponential terms for efficiency
-            exp_terms = np.zeros((len(coefficients), len(theta)), dtype=complex)
-            for n_idx, n in enumerate(coefficients):
-                exp_terms[n_idx, :] = np.exp(-1j * n * theta_rad)
-            
-            # Process each coefficient
-            for n_idx, n in enumerate(coefficients):
-                # Compute mode coefficient for theta component
-                CMC_1 = (
-                    -1 * ((-1j) ** (-n)) / (4 * np.pi * wavenumber) *
-                    np.trapezoid(
-                        (e_theta[f_idx, :, :].transpose() * exp_terms[n_idx, :]).transpose(),
-                        theta_rad, axis=0
-                    )
-                )
-                
-                # Compute mode coefficient for phi component
-                CMC_2 = (
-                    -1j * ((-1j) ** (-n)) / (4 * np.pi * wavenumber) *
-                    np.trapezoid(
-                        (e_phi[f_idx, :, :].transpose() * exp_terms[n_idx, :]).transpose(),
-                        theta_rad, axis=0
-                    )
-                )
-                
-                # Sum the modes
-                CMC_1_term = np.outer(exp_terms[n_idx, :], (-1j) ** n * CMC_1)
-                CMC_2_term = np.outer(exp_terms[n_idx, :], (-1j) ** n * CMC_2)
-                
-                CMC_1_sum += CMC_1_term
-                CMC_2_sum += CMC_2_term
-            
-            # Compute final field components
-            e_phi_new[f_idx, :, :] = 2 * 1j * wavenumber * CMC_2_sum
-            e_theta_new[f_idx, :, :] = -2 * wavenumber * CMC_1_sum
-        
-        # Flip the theta axis because of coordinate system difference from reference
-        e_theta_flipped = np.flip(e_theta_new, axis=1)
-        e_phi_flipped = np.flip(e_phi_new, axis=1)
-        
-        # Update the pattern data directly
-        self.data['e_theta'].values = e_theta_flipped
-        self.data['e_phi'].values = e_phi_flipped
-        
+
+        frequencies = np.asarray(self.frequencies, dtype=float)
+
+        def filter_modes(theta_deg, e_theta, e_phi):
+            theta_deg = np.asarray(theta_deg, dtype=float)
+            n_samples = len(theta_deg)
+            steps = np.diff(theta_deg)
+            if n_samples < 4 or not np.allclose(steps, steps[0], atol=1e-6):
+                raise ValueError("apply_mars requires a uniform theta grid.")
+            step = float(steps[0])
+            span = theta_deg[-1] - theta_deg[0]
+            duplicate_end = np.isclose(span, 360.0, atol=1e-6)
+            if not (duplicate_end or np.isclose(span + step, 360.0, atol=1e-6)):
+                raise ValueError(
+                    f"apply_mars requires each phi cut to span a full 360 degrees of "
+                    f"theta (found {span:g} degrees). Use transform_coordinates('central') "
+                    f"on a full-sphere pattern first.")
+
+            # Unique samples on the circle; a duplicated +/-180 endpoint is
+            # dropped for the analysis and reproduced on synthesis.
+            n_unique = n_samples - 1 if duplicate_end else n_samples
+            theta_rad = np.radians(theta_deg)
+            theta_unique = theta_rad[:n_unique]
+            d_theta = np.radians(step)
+
+            e_theta_new = np.empty_like(e_theta, dtype=np.complex128)
+            e_phi_new = np.empty_like(e_phi, dtype=np.complex128)
+            nyquist = n_unique // 2
+
+            for f_idx, f in enumerate(frequencies):
+                wavenumber = 2 * np.pi * f / lightspeed
+                n_max = int(np.floor(wavenumber * maximum_radial_extent))
+                if n_max >= nyquist:
+                    logger.warning(
+                        "apply_mars: at %.4g Hz the mode limit k*D = %d is at or above "
+                        "the theta sampling limit (%d); the filter removes nothing.",
+                        f, n_max, nyquist)
+                    n_max = nyquist
+                orders = np.arange(-n_max, n_max + 1)
+
+                # Periodic rectangular rule, exact for a band-limited periodic
+                # field: analysis A[n, theta] and synthesis B[theta, n].
+                analysis = np.exp(-1j * np.outer(orders, theta_unique)) * (d_theta / (2 * np.pi))
+                synthesis = np.exp(1j * np.outer(theta_rad, orders))
+
+                e_theta_new[f_idx] = synthesis @ (analysis @ e_theta[f_idx, :n_unique, :])
+                e_phi_new[f_idx] = synthesis @ (analysis @ e_phi[f_idx, :n_unique, :])
+
+            return e_theta_new, e_phi_new
+
+        e_theta_new, e_phi_new = self._apply_on_central_grid(filter_modes, 'apply_mars')
+
+        self.data['e_theta'].values = np.asarray(e_theta_new, dtype=np.complex64)
+        self.data['e_phi'].values = np.asarray(e_phi_new, dtype=np.complex64)
+
         # Recalculate derived components e_co and e_cx
         self.assign_polarization(self.polarization)
-        
+
         # Clear cache
         self.clear_cache()
-        
+
         # Update metadata if needed
         if hasattr(self, 'metadata') and self.metadata is not None:
-            if 'operations' not in self.metadata:
-                self.metadata['operations'] = []
-            self.metadata['operations'].append({
+            self.metadata.setdefault('operations', []).append({
                 'type': 'apply_mars',
                 'maximum_radial_extent': maximum_radial_extent
             })
 
     def swap_polarization_axes(self) -> None:
         """
-        Swap vertical and horizontal polarization ports.
+        Swap the two Ludwig-3 linear polarization components.
 
-        Exchanges the X and Y Ludwig-3 components by converting to the X/Y basis,
-        swapping them, then converting back to theta/phi. This is equivalent to
-        physically rotating the antenna feed by 90 degrees.
+        Converts to the Ludwig-3 x/y basis, exchanges e_x and e_y, and converts
+        back to theta/phi. Use it when the two linear ports of a measurement
+        were recorded under each other's name, so the pattern labelled x is
+        the y port and vice versa.
+
+        This is an exchange of axes, not a rotation of the feed: the map
+        (e_x, e_y) -> (e_y, e_x) is a reflection about the x = y plane, with
+        determinant -1. It is its own inverse (two calls restore the pattern),
+        and for a circularly polarized pattern it exchanges the handedness,
+        because reflecting the basis reverses the sense of rotation. A rigid
+        90 degree rotation of the feed about boresight would instead be
+        (e_x, e_y) -> (-e_y, e_x), which preserves handedness; use
+        ``rotate(0, 0, 90)`` for that.
 
         Note:
             This modifies the pattern in-place.
@@ -1076,6 +1102,51 @@ class FarFieldOperationsMixin:
             })
 
 
+    def _apply_on_central_grid(self, operation, name: str, fallback=None):
+        """
+        Evaluate an operation that needs closed theta cuts and write the result
+        back on this pattern's own grid.
+
+        ``operation(theta_deg, e_theta, e_phi) -> (e_theta, e_phi)`` receives
+        central-format arrays (theta -180..180, every phi cut a closed great
+        circle). A central pattern is passed through directly. A sided pattern
+        whose theta starts at 0 is converted to central on a copy, operated on,
+        converted back and mapped onto the original theta/phi grid by value,
+        so the caller's layout is preserved. A sided pattern whose theta does
+        not start at 0 cannot be closed; ``fallback`` is used if given,
+        otherwise ValueError is raised.
+
+        Returns (e_theta, e_phi) on this pattern's grid, not yet stored.
+        """
+        theta = np.asarray(self.theta_angles, dtype=float)
+        if theta.min() < -0.5:
+            return operation(theta, self.data.e_theta.values, self.data.e_phi.values)
+
+        if not np.isclose(theta[0], 0.0, atol=self._ANGLE_TOL):
+            if fallback is not None:
+                return fallback(theta, self.data.e_theta.values, self.data.e_phi.values)
+            raise ValueError(
+                f"{name} needs each phi cut to be a closed circle in theta, which "
+                f"requires central format or a sided pattern starting at theta = 0 "
+                f"(this one starts at {theta[0]:g} degrees).")
+
+        work = self.copy()
+        work.transform_coordinates('central', _preserve_polarization=True)
+        et, ep = operation(np.asarray(work.theta_angles, dtype=float),
+                           work.data.e_theta.values, work.data.e_phi.values)
+        work.data['e_theta'].values = np.asarray(et, dtype=np.complex64)
+        work.data['e_phi'].values = np.asarray(ep, dtype=np.complex64)
+        work.transform_coordinates('sided', _preserve_polarization=True)
+
+        phi_norm = np.mod(np.asarray(self.phi_angles, dtype=float), 360.0)
+        phi_norm = np.where(np.isclose(phi_norm, 360.0, atol=self._ANGLE_TOL), 0.0, phi_norm)
+        phi_idx = self._match_rows(phi_norm, np.asarray(work.phi_angles, dtype=float))
+        theta_idx = self._match_rows(theta, np.asarray(work.theta_angles, dtype=float))
+        if np.any(phi_idx < 0) or np.any(theta_idx < 0):
+            raise RuntimeError(f"{name}: could not map the result back onto the original grid")
+        return (work.data.e_theta.values[:, theta_idx, :][:, :, phi_idx],
+                work.data.e_phi.values[:, theta_idx, :][:, :, phi_idx])
+
     def shift_theta_origin(self, theta_offset: float) -> None:
         """
         Shift the origin of the theta axis of every phi cut (measurement correction).
@@ -1103,39 +1174,17 @@ class FarFieldOperationsMixin:
         """
         self._require_uniform_theta('shift_theta_origin')
 
-        theta = np.asarray(self.theta_angles, dtype=float)
-        is_central = theta.min() < -0.5
+        def shifted(theta_deg, e_theta, e_phi):
+            return self._shift_cuts_along_theta(theta_deg, e_theta, e_phi, theta_offset)
 
-        if is_central:
-            e_theta, e_phi = self._shift_cuts_along_theta(
-                theta, self.data.e_theta.values, self.data.e_phi.values, theta_offset)
-        elif np.isclose(theta[0], 0.0, atol=self._ANGLE_TOL):
-            # Sided: work on a closed-circle (central) copy, then map back
-            # onto this pattern's own grid so the caller's layout is kept.
-            work = self.copy()
-            work.transform_coordinates('central', _preserve_polarization=True)
-            et, ep = self._shift_cuts_along_theta(
-                np.asarray(work.theta_angles, dtype=float),
-                work.data.e_theta.values, work.data.e_phi.values, theta_offset)
-            work.data['e_theta'].values = et.astype(np.complex64)
-            work.data['e_phi'].values = ep.astype(np.complex64)
-            work.transform_coordinates('sided', _preserve_polarization=True)
-
-            phi_norm = np.mod(np.asarray(self.phi_angles, dtype=float), 360.0)
-            phi_norm = np.where(np.isclose(phi_norm, 360.0, atol=self._ANGLE_TOL), 0.0, phi_norm)
-            phi_idx = self._match_rows(phi_norm, np.asarray(work.phi_angles, dtype=float))
-            theta_idx = self._match_rows(theta, np.asarray(work.theta_angles, dtype=float))
-            if np.any(phi_idx < 0) or np.any(theta_idx < 0):
-                raise RuntimeError("shift_theta_origin: could not map the shifted pattern "
-                                   "back onto the original grid")
-            e_theta = work.data.e_theta.values[:, theta_idx, :][:, :, phi_idx]
-            e_phi = work.data.e_phi.values[:, theta_idx, :][:, :, phi_idx]
-        else:
+        def extend_ends(theta_deg, e_theta, e_phi):
             logger.warning(
                 "shift_theta_origin: sided pattern does not start at theta = 0; "
                 "shifting each cut with end-value extension instead of wrapping.")
-            e_theta, e_phi = self._shift_cuts_along_theta(
-                theta, self.data.e_theta.values, self.data.e_phi.values, theta_offset)
+            return shifted(theta_deg, e_theta, e_phi)
+
+        e_theta, e_phi = self._apply_on_central_grid(
+            shifted, 'shift_theta_origin', fallback=extend_ends)
 
         self.data['e_theta'].values = np.asarray(e_theta, dtype=np.complex64)
         self.data['e_phi'].values = np.asarray(e_phi, dtype=np.complex64)

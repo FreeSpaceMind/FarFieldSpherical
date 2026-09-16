@@ -133,15 +133,21 @@ where $k = 2\pi / \lambda$ is the wavenumber. Modes with $|n| > n_{max}$ are eva
 
 ### Algorithm
 
-1. **Decompose**: Compute the cylindrical harmonic spectrum of the measured field along the azimuthal ($\phi$) direction using the FFT
-2. **Filter**: Retain only modes with $|n| \leq n_{max}$, zeroing all higher-order modes
-3. **Reconstruct**: Inverse-transform the filtered spectrum back to the spatial domain
+Each $\phi$ cut is treated as a closed circle in $\theta$ (central format, $\theta$ from $-180°$ to $180°$) and expanded in cylindrical harmonics, which on a circle is a Fourier series in $\theta$:
 
-The result is a pattern with multipath ripple suppressed while preserving the physical antenna radiation.
+$$c_n = \frac{1}{2\pi}\int_0^{2\pi} E(\theta)\,e^{-jn\theta}\,d\theta, \qquad E_{filtered}(\theta) = \sum_{|n| \le n_{max}} c_n\,e^{+jn\theta}$$
+
+1. **Decompose** each cut with a periodic (rectangular-rule) transform, which is exact for a band-limited periodic field on a uniform grid.
+2. **Filter**: keep $|n| \le n_{max}$ and discard the rest.
+3. **Reconstruct** on the original grid.
+
+The expansion needs every cut to span a full $360°$ of $\theta$, so `apply_mars` works in central format: a sided pattern is converted on a copy, filtered, and the result mapped back onto its own grid, the same as `shift_theta_origin`. A pattern that cannot be closed (a hemisphere, or a sided pattern whose $\theta$ does not start at $0°$) is rejected. If $n_{max}$ reaches the sampling limit of the $\theta$ grid the filter removes nothing and a warning is logged.
+
+The mode limit $n_{max} = \lfloor kD \rfloor$ is meaningful only when the antenna is centred on the origin the pattern is referred to. Translate the pattern to its phase centre first (`translate`, or the Phase Center step of the viewer's processing pipeline, which runs before MARS) so that the filter acts on range reflections rather than on the antenna's own displaced-origin phase ramp.
 
 ### Parameters
 
-- **Diameter** $D$: The maximum physical extent of the antenna (in meters). This determines $n_{max}$ and thus the aggressiveness of the filtering.
+- **Maximum radial extent** $D$: the largest distance from the origin to any part of the antenna (in metres). This determines $n_{max}$ and thus the aggressiveness of the filtering.
 - A larger $D$ retains more modes (less filtering). Setting $D$ too small removes physical content; setting it too large leaves reflections.
 
 ## Amplitude Normalization
@@ -182,21 +188,23 @@ where $\angle E(\theta_{ref}, \phi_{ref})$ is the phase of the field at the refe
 
 ## Boresight Normalization (Per-Cut)
 
-This operation ensures that all phi cuts pass through the same amplitude and phase at boresight ($\theta = 0°$). It corrects for systematic measurement errors that cause cut-to-cut offsets.
+Every $\phi$ cut passes through boresight ($\theta = 0°$), which is a single physical direction, so the Ludwig-3 components $E_x(0, \phi_i)$ and $E_y(0, \phi_i)$ should be identical for every cut. Any spread across cuts at boresight is a per-cut measurement offset (a gain or phase drift between cuts), and this operation removes it by scaling each cut with one complex factor.
 
 ### Method
 
-For each phi cut $\phi_i$, the boresight field value $E(\theta=0, \phi_i)$ is extracted. A reference value is computed as the **median** across all cuts:
+For each cut $\phi_i$ the boresight sample $E(0, \phi_i)$ is extracted and a common reference is formed from the magnitude median and the circular mean of the phase:
 
-$$E_{ref} = \text{median}_i\{E(\theta=0, \phi_i)\}$$
+$$|E_{ref}| = \operatorname{median}_i |E(0, \phi_i)|, \qquad \arg E_{ref} = \arg \sum_i E(0, \phi_i)$$
 
-The median is used instead of the mean to provide robustness against outlier cuts (e.g., a cut with a measurement glitch at boresight).
+The median magnitude is robust to an outlier cut. The circular (vector) mean of the phase is used because a linear median of wrapped angles fails when the phases straddle $\pm180°$: samples at $179°$, $-179°$, $178°$, $-178°$ have a linear median near $0°$, which would rotate the whole pattern by $180°$.
 
 Each cut is then scaled:
 
-$$E'(\theta, \phi_i) = E(\theta, \phi_i) \cdot \frac{E_{ref}}{E(\theta=0, \phi_i)}$$
+$$E'(\theta, \phi_i) = E(\theta, \phi_i) \cdot \frac{E_{ref}}{E(0, \phi_i)}$$
 
-This is a complex-valued scaling that adjusts both amplitude and phase of each cut to match the median boresight value.
+### Which component sets the correction
+
+The correction for a cut is derived from the dominant component, the one with the larger median boresight magnitude. A component whose median boresight magnitude is more than 20 dB below the dominant one is the cross-pol of a linearly polarized antenna, and its boresight value is noise; deriving a correction from it would divide by that noise and apply an arbitrary complex gain to the entire cut. Such a component borrows the dominant component's correction. When both components are significant (dual-polarized or circularly polarized antennas) each is corrected independently. The threshold is the `weak_component_ratio` argument, 0.1 by default.
 
 ## Pattern Mirroring
 

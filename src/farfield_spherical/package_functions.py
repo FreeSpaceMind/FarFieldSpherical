@@ -13,11 +13,28 @@ logger = logging.getLogger(__name__)
 
 def average_patterns(patterns: List[FarFieldSpherical], weights: Optional[List[float]] = None) -> FarFieldSpherical:
     """
-    Create a new far-field pattern by averaging multiple patterns.
-    
-    This function computes a weighted average of the provided patterns. All patterns
-    must have compatible dimensions (same theta, phi, and frequency values).
-    
+    Create a new far-field pattern by coherently averaging multiple patterns.
+
+    The average is taken on the complex field, sample by sample:
+
+        E_avg = sum_i w_i E_i
+
+    so it is coherent and the inputs' absolute phases matter. That is the
+    intended use: averaging the two halves of a dual-sphere measurement (see
+    ``split_dual_sphere``), which were recorded in one session against one
+    phase reference and differ only by the chamber's direction-dependent
+    biases. Averaging them coherently keeps the common field and averages
+    those biases down.
+
+    It is not appropriate for patterns measured on different occasions with
+    unrelated absolute phase. Two such patterns can partially cancel, and a
+    pattern averaged with its own negation cancels completely; for that case
+    align the inputs first, for example with ``normalize_phase`` or a
+    ``translate`` to a common phase centre, or average the powers yourself.
+
+    All patterns must have compatible dimensions (same theta, phi, and
+    frequency values) and the same polarization.
+
     Args:
         patterns: List of FarFieldSpherical objects to average
         weights: Optional list of weights for each pattern. If None, equal weights are used.
