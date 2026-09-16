@@ -949,7 +949,7 @@ class FarFieldOperationsMixin:
                 'type': 'normalize_at_boresight'
             })
 
-    def apply_mars(self, maximum_radial_extent: float) -> None:
+    def apply_mars(self, maximum_radial_extent: float, taper: int = 0) -> None:
         """
         Apply Mathematical Absorber Reflection Suppression (MARS).
 
@@ -957,16 +957,30 @@ class FarFieldOperationsMixin:
         cylindrical modes, i.e. a Fourier series in theta:
 
             c_n = (1/2pi) int_0^{2pi} E(theta) e^{-j n theta} dtheta
-            E_filtered(theta) = sum_{|n| <= n_max} c_n e^{+j n theta}
+            E_filtered(theta) = sum_n w_n c_n e^{+j n theta}
 
         An antenna of maximum radial extent D about the measurement origin
         radiates only modes with |n| <= k D, so higher orders can only be
         range reflections and are removed. n_max = floor(k D) per frequency.
 
-        The expansion needs every phi cut to span a full 360 degrees of theta,
-        so the pattern is processed in central format: a sided pattern is
-        converted on a copy, filtered, and the result mapped back onto its own
-        grid. The theta grid must be uniform.
+        The weights w_n are 1 for |n| <= n_max and 0 beyond n_max + taper.
+        With ``taper`` = 0 the filter is a brick wall, which rings (the
+        residual of a removed reflection spreads with slowly decaying
+        sidelobes in theta). A positive ``taper`` rolls the weights off with a
+        raised cosine over the ``taper`` orders above n_max, which trades a
+        little extra retained reflection for much less ringing.
+
+        The expansion needs each phi cut to be a closed great circle, so the
+        pattern is processed in central format: a sided pattern is converted
+        on a copy, filtered, and the result mapped back onto its own grid. The
+        theta grid must be uniform with a step that divides 360 degrees.
+
+        A cut that spans less than 360 degrees (a sector such as -100..100
+        from a far-field or compact range) is zero-padded to a full circle,
+        filtered, and read back on the sector. This is the sector processing
+        of far-field MARS. The truncation makes the padded cut discontinuous,
+        so the filtered result rings near the sector edges; a warning is
+        logged and the outermost samples should be treated with caution.
 
         For the filter to act on reflections rather than the antenna's own
         pattern, the antenna should first be translated so that the
@@ -975,16 +989,22 @@ class FarFieldOperationsMixin:
         Args:
             maximum_radial_extent: Maximum radial extent of the antenna in
                 metres, measured from the origin the pattern is referred to
+            taper: Number of mode orders over which the cutoff rolls off with
+                a raised cosine. 0 (the default) is a brick-wall filter.
 
         Raises:
-            ValueError: If the extent is not positive, the theta grid is not
-                uniform, or the cuts cannot be closed into full circles
+            ValueError: If the extent is not positive, the taper is negative,
+                the theta grid is not uniform or its step does not divide 360,
+                or a sided pattern's theta does not start at 0
             NotImplementedError: If the pattern has non-uniform theta grids
         """
         self._require_uniform_theta('apply_mars')
 
         if maximum_radial_extent <= 0:
             raise ValueError("Maximum radial extent must be positive")
+        taper = int(taper)
+        if taper < 0:
+            raise ValueError("taper must be zero or a positive number of modes")
 
         frequencies = np.asarray(self.frequencies, dtype=float)
 
@@ -995,24 +1015,39 @@ class FarFieldOperationsMixin:
             if n_samples < 4 or not np.allclose(steps, steps[0], atol=1e-6):
                 raise ValueError("apply_mars requires a uniform theta grid.")
             step = float(steps[0])
+            n_circle = 360.0 / step
+            if not np.isclose(n_circle, np.round(n_circle), atol=1e-6):
+                raise ValueError(
+                    f"apply_mars requires a theta step that divides 360 degrees "
+                    f"(found {step:g}).")
+            n_circle = int(np.round(n_circle))
             span = theta_deg[-1] - theta_deg[0]
             duplicate_end = np.isclose(span, 360.0, atol=1e-6)
-            if not (duplicate_end or np.isclose(span + step, 360.0, atol=1e-6)):
+            full_circle = duplicate_end or np.isclose(span + step, 360.0, atol=1e-6)
+            if not duplicate_end and span + step > 360.0 + 1e-6:
                 raise ValueError(
-                    f"apply_mars requires each phi cut to span a full 360 degrees of "
-                    f"theta (found {span:g} degrees). Use transform_coordinates('central') "
-                    f"on a full-sphere pattern first.")
+                    f"apply_mars: theta spans more than one circle ({span:g} degrees).")
+            if not full_circle:
+                logger.warning(
+                    "apply_mars: theta cuts span %g degrees, not a full circle. The "
+                    "sector is zero-padded to 360 degrees before filtering (far-field "
+                    "MARS sector processing); expect ringing within a few beamwidths "
+                    "of the sector edges at theta = %g and %g degrees.",
+                    span, theta_deg[0], theta_deg[-1])
 
-            # Unique samples on the circle; a duplicated +/-180 endpoint is
-            # dropped for the analysis and reproduced on synthesis.
-            n_unique = n_samples - 1 if duplicate_end else n_samples
+            # Samples used for the analysis: the unique samples of a closed
+            # circle (a duplicated +/-180 endpoint is dropped and reproduced
+            # on synthesis), or every sample of a sector. Samples missing from
+            # a sector are zeros on the implied full circle, so they simply do
+            # not contribute to the sum.
+            n_analysis = n_samples - 1 if duplicate_end else n_samples
             theta_rad = np.radians(theta_deg)
-            theta_unique = theta_rad[:n_unique]
+            theta_analysis = theta_rad[:n_analysis]
             d_theta = np.radians(step)
 
             e_theta_new = np.empty_like(e_theta, dtype=np.complex128)
             e_phi_new = np.empty_like(e_phi, dtype=np.complex128)
-            nyquist = n_unique // 2
+            nyquist = n_circle // 2
 
             for f_idx, f in enumerate(frequencies):
                 wavenumber = 2 * np.pi * f / lightspeed
@@ -1023,15 +1058,17 @@ class FarFieldOperationsMixin:
                         "the theta sampling limit (%d); the filter removes nothing.",
                         f, n_max, nyquist)
                     n_max = nyquist
-                orders = np.arange(-n_max, n_max + 1)
+                n_stop = min(n_max + taper, nyquist)
+                orders = np.arange(-n_stop, n_stop + 1)
+                weights = self._mars_weights(orders, n_max, n_stop - n_max)
 
                 # Periodic rectangular rule, exact for a band-limited periodic
                 # field: analysis A[n, theta] and synthesis B[theta, n].
-                analysis = np.exp(-1j * np.outer(orders, theta_unique)) * (d_theta / (2 * np.pi))
-                synthesis = np.exp(1j * np.outer(theta_rad, orders))
+                analysis = np.exp(-1j * np.outer(orders, theta_analysis)) * (d_theta / (2 * np.pi))
+                synthesis = np.exp(1j * np.outer(theta_rad, orders)) * weights[None, :]
 
-                e_theta_new[f_idx] = synthesis @ (analysis @ e_theta[f_idx, :n_unique, :])
-                e_phi_new[f_idx] = synthesis @ (analysis @ e_phi[f_idx, :n_unique, :])
+                e_theta_new[f_idx] = synthesis @ (analysis @ e_theta[f_idx, :n_analysis, :])
+                e_phi_new[f_idx] = synthesis @ (analysis @ e_phi[f_idx, :n_analysis, :])
 
             return e_theta_new, e_phi_new
 
@@ -1050,8 +1087,23 @@ class FarFieldOperationsMixin:
         if hasattr(self, 'metadata') and self.metadata is not None:
             self.metadata.setdefault('operations', []).append({
                 'type': 'apply_mars',
-                'maximum_radial_extent': maximum_radial_extent
+                'maximum_radial_extent': maximum_radial_extent,
+                'taper': taper,
             })
+
+    @staticmethod
+    def _mars_weights(orders, n_max, taper):
+        """
+        Mode weights for apply_mars: 1 up to |n| = n_max, a raised-cosine
+        roll-off to 0 at |n| = n_max + taper, 0 beyond.
+        """
+        magnitude = np.abs(orders).astype(float)
+        weights = np.where(magnitude <= n_max, 1.0, 0.0)
+        if taper > 0:
+            in_taper = (magnitude > n_max) & (magnitude <= n_max + taper)
+            x = (magnitude[in_taper] - n_max) / (taper + 1)
+            weights[in_taper] = 0.5 * (1 + np.cos(np.pi * x))
+        return weights
 
     def swap_polarization_axes(self) -> None:
         """

@@ -96,11 +96,52 @@ class TestApplyMars:
         np.testing.assert_allclose(sided.data.e_theta.values, central.data.e_theta.values, atol=2e-5)
         np.testing.assert_allclose(sided.data.e_phi.values, central.data.e_phi.values, atol=2e-5)
 
-    def test_hemisphere_raises(self):
-        """theta -90..90 is not a closed circle."""
-        p = make(np.arange(-90, 91, 2.0), PHI_C)
-        with pytest.raises(ValueError, match='360'):
+    def test_sector_is_zero_padded(self, caplog):
+        """A cut spanning less than 360 degrees (a far-field range sector) is
+        zero-padded to a full circle: the result equals filtering the
+        explicitly padded pattern and reading back the sector."""
+        theta_sector = np.arange(-100, 101, 2.0)
+        clean = make(theta_sector, PHI_C)
+        p = with_ripple(clean, order=30, amplitude=0.1)
+
+        theta_full = TH_C
+        inside = (theta_full >= -100) & (theta_full <= 100)
+        shape = (len(FREQS), len(theta_full), len(PHI_C))
+        e_theta = np.zeros(shape, dtype=complex)
+        e_phi = np.zeros(shape, dtype=complex)
+        e_theta[:, inside] = p.data.e_theta.values
+        e_phi[:, inside] = p.data.e_phi.values
+        padded = FarFieldSpherical(theta_full, PHI_C, FREQS, e_theta, e_phi, polarization='x')
+        padded.apply_mars(extent_for_order(10))
+
+        with caplog.at_level(logging.WARNING, logger='farfield_spherical.farfield_operations'):
             p.apply_mars(extent_for_order(10))
+        assert 'zero-padded' in caplog.text
+        assert_grid(p, theta_sector, PHI_C)
+        np.testing.assert_allclose(p.data.e_theta.values, padded.data.e_theta.values[:, inside], atol=1e-6)
+        np.testing.assert_allclose(p.data.e_phi.values, padded.data.e_phi.values[:, inside], atol=1e-6)
+
+        # The ripple is removed in the interior; the truncation rings at the edges.
+        error = np.abs(p.data.e_theta.values - clean.data.e_theta.values)
+        assert error[:, np.abs(theta_sector) < 80].max() < 0.05
+        assert error[:, np.abs(theta_sector) >= 96].max() > 0.1
+
+    def test_asymmetric_sector(self):
+        p = with_ripple(make(np.arange(-60, 121, 2.0), PHI_C))
+        p.apply_mars(extent_for_order(10))
+        assert np.isfinite(p.data.e_theta.values).all()
+
+    def test_sided_hemisphere_is_a_sector(self):
+        """theta 0..90 on a full phi circle closes to a -90..90 sector."""
+        theta, phi = np.arange(0, 91, 2.0), np.arange(0, 360, 15.0)
+        p = make(theta, phi)
+        p.apply_mars(extent_for_order(10))
+        assert_grid(p, theta, phi)
+        assert np.isfinite(p.data.e_theta.values).all()
+
+    def test_step_must_divide_360(self):
+        with pytest.raises(ValueError, match='divides 360'):
+            make(np.arange(-180, 181, 7.0), PHI_C).apply_mars(extent_for_order(10))
 
     def test_sided_not_starting_at_zero_raises(self):
         p = make(np.arange(10, 181, 2.0), np.arange(0, 360, 15.0))
@@ -118,6 +159,84 @@ class TestApplyMars:
     def test_negative_extent_raises(self):
         with pytest.raises(ValueError, match='positive'):
             make(TH_C, PHI_C).apply_mars(-1.0)
+
+    def test_negative_taper_raises(self):
+        with pytest.raises(ValueError, match='taper'):
+            make(TH_C, PHI_C).apply_mars(extent_for_order(10), taper=-1)
+
+    def test_records_taper(self):
+        p = make(TH_C, PHI_C)
+        p.apply_mars(extent_for_order(10), taper=4)
+        assert p.metadata['operations'][-1]['taper'] == 4
+
+
+def scatterer_pattern(displacement, amplitude=0.05, freq=10e9):
+    """Dipole field plus a point scatterer displaced from the origin.
+
+    After the AUT is translated back to the origin, a range reflection has
+    the form of a chirp exp(-j k d . r_hat) whose cylindrical modes extend
+    to |n| ~ k |d|; that is what MARS is meant to remove."""
+    theta, phi = np.arange(-180, 181, 1.0), PHI_C
+    e_theta, e_phi = analytic_fields(theta, phi, np.array([[1.0 + 0.3j, 0.5 - 0.2j, 0.25 + 0.1j]]))
+    e_theta, e_phi = e_theta[:1], e_phi[:1]
+    k = 2 * np.pi * freq / lightspeed
+    th, ph = np.meshgrid(np.radians(theta), np.radians(phi), indexing='ij')
+    r_hat = np.stack([np.sin(th) * np.cos(ph), np.sin(th) * np.sin(ph), np.cos(th)])
+    chirp = amplitude * np.exp(-1j * k * np.einsum('i,i...->...', np.asarray(displacement), r_hat))[None]
+    pattern = FarFieldSpherical(theta, phi, np.array([freq]), e_theta + chirp, e_phi, polarization='x')
+    return pattern, e_theta, e_phi, chirp
+
+
+class TestMarsFilter:
+    def test_brick_wall_is_default(self):
+        p0 = with_ripple(make(TH_C, PHI_C))
+        p1 = p0.copy()
+        p0.apply_mars(extent_for_order(10))
+        p1.apply_mars(extent_for_order(10), taper=0)
+        np.testing.assert_array_equal(p0.data.e_theta.values, p1.data.e_theta.values)
+
+    def test_taper_passes_smooth_field(self):
+        p = make(TH_C, PHI_C)
+        before = p.data.e_theta.values.copy()
+        p.apply_mars(extent_for_order(10), taper=8)
+        np.testing.assert_allclose(p.data.e_theta.values, before, atol=2e-6)
+
+    def test_taper_weights(self):
+        weights = FarFieldSpherical._mars_weights(np.arange(-8, 9), n_max=4, taper=3)
+        expected_inner = np.ones(9)
+        np.testing.assert_array_equal(weights[4:13], expected_inner)
+        assert weights[-1] == 0.0 and weights[0] == 0.0          # |n| = 8 is beyond n_max + taper
+        roll = weights[13:16]                                     # n = 5, 6, 7
+        assert np.all(np.diff(roll) < 0) and roll[0] < 1.0 and roll[-1] > 0.0
+        np.testing.assert_array_equal(weights[:8], weights[-1:-9:-1])   # symmetric in n
+
+    def test_taper_suppresses_the_ripple_when_it_ends_below_the_ripple_order(self):
+        clean = make(TH_C, PHI_C)
+        p = with_ripple(clean, order=30, amplitude=0.1)
+        p.apply_mars(extent_for_order(10), taper=10)     # weights end at |n| = 20 < 30
+        np.testing.assert_allclose(p.data.e_theta.values, clean.data.e_theta.values, atol=2e-5)
+
+    def test_scatterer_energy_is_reduced(self):
+        """A reflection from 0.5 m off the origin at 10 GHz spans modes to
+        |n| ~ 105; keeping |n| <= 6 (D = 3 cm) removes most of its energy and
+        leaves the antenna's own field intact."""
+        pattern, e_theta, e_phi, chirp = scatterer_pattern([0.3, 0.2, 0.35])
+        pattern.apply_mars(0.03)
+        residual = pattern.data.e_theta.values - e_theta
+        rms_before = np.sqrt(np.mean(np.abs(chirp) ** 2))
+        rms_after = np.sqrt(np.mean(np.abs(residual) ** 2))
+        assert 20 * np.log10(rms_after / rms_before) < -10.0
+        np.testing.assert_allclose(pattern.data.e_phi.values, e_phi, atol=2e-6)
+
+    def test_taper_reduces_ringing_spread(self):
+        """The brick wall spreads the residual of a removed reflection over
+        the whole cut (Dirichlet sidelobes); a taper confines it."""
+        pattern, e_theta, _, _ = scatterer_pattern([0.3, 0.2, 0.35])
+        brick, tapered = pattern.copy(), pattern.copy()
+        brick.apply_mars(0.03)
+        tapered.apply_mars(0.03, taper=10)
+        spread = lambda p: np.mean(np.abs(p.data.e_theta.values - e_theta) > 0.005)
+        assert spread(tapered) < 0.85 * spread(brick)
 
 
 def linear_pattern(theta, phi, cross_level=1e-3, phase_deg=0.0):

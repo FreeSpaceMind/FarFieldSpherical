@@ -135,13 +135,31 @@ where $k = 2\pi / \lambda$ is the wavenumber. Modes with $|n| > n_{max}$ are eva
 
 Each $\phi$ cut is treated as a closed circle in $\theta$ (central format, $\theta$ from $-180°$ to $180°$) and expanded in cylindrical harmonics, which on a circle is a Fourier series in $\theta$:
 
-$$c_n = \frac{1}{2\pi}\int_0^{2\pi} E(\theta)\,e^{-jn\theta}\,d\theta, \qquad E_{filtered}(\theta) = \sum_{|n| \le n_{max}} c_n\,e^{+jn\theta}$$
+$$c_n = \frac{1}{2\pi}\int_0^{2\pi} E(\theta)\,e^{-jn\theta}\,d\theta, \qquad E_{filtered}(\theta) = \sum_{n} w_n\,c_n\,e^{+jn\theta}$$
 
 1. **Decompose** each cut with a periodic (rectangular-rule) transform, which is exact for a band-limited periodic field on a uniform grid.
-2. **Filter**: keep $|n| \le n_{max}$ and discard the rest.
+2. **Filter**: weight each order by $w_n$, which is $1$ for $|n| \le n_{max}$ and $0$ above the cutoff.
 3. **Reconstruct** on the original grid.
 
-The expansion needs every cut to span a full $360°$ of $\theta$, so `apply_mars` works in central format: a sided pattern is converted on a copy, filtered, and the result mapped back onto its own grid, the same as `shift_theta_origin`. A pattern that cannot be closed (a hemisphere, or a sided pattern whose $\theta$ does not start at $0°$) is rejected. If $n_{max}$ reaches the sampling limit of the $\theta$ grid the filter removes nothing and a warning is logged.
+This is the far-field MARS (F-MARS) algorithm of Gregson et al., in which the cylindrical mode coefficients of a great-circle cut are a Fourier transform of each far-field component along the cut; the $j^n$ factors of the cylindrical formulation cancel between analysis and synthesis. A fixed-$\phi$ cut in central format is a great circle, so the filter is applied to each $\phi$ cut in turn, which is how F-MARS is extended to two-dimensional data. Conical (fixed-$\theta$) cuts cannot be processed this way.
+
+The expansion needs each cut to be a closed great circle, so `apply_mars` works in central format: a sided pattern is converted on a copy, filtered, and the result mapped back onto its own grid, the same as `shift_theta_origin`. A sided pattern whose $\theta$ does not start at $0°$ cannot be closed and is rejected. The $\theta$ step must divide $360°$. If $n_{max}$ reaches the sampling limit of the $\theta$ grid the filter removes nothing and a warning is logged.
+
+#### Sectors
+
+A cut that spans less than $360°$, such as the $\pm 100°$ sector of a far-field or compact range measurement, is **zero-padded** to a full circle, filtered, and read back on the sector. This is the sector processing described for F-MARS. The truncation makes the padded cut discontinuous at the sector edges, so the filtered result rings there: in a synthetic test with a $\pm 100°$ sector the error was about $0.04$ in the interior and $0.3$ within $4°$ of the edges, on a unit-amplitude field. A warning naming the sector edges is logged; treat the outermost samples with caution. A sided hemisphere ($\theta$ from $0°$ to $90°$ on a full $\phi$ circle) closes to a $\pm 90°$ sector and is handled the same way. A pattern that is missing $\phi$ cuts has its missing half filled with zeros by the coordinate transform, which puts a sector edge at boresight; that is not a useful input for MARS.
+
+#### Filter taper
+
+With `taper = 0` (the default) the filter is a brick wall. A brick wall in the mode domain is a Dirichlet kernel in $\theta$, so the residual of a removed reflection spreads along the whole cut with slowly decaying sidelobes. With `taper = m` the weights roll off with a raised cosine over the $m$ orders above $n_{max}$:
+
+$$w_n = \tfrac{1}{2}\left(1 + \cos \frac{\pi\,(|n| - n_{max})}{m + 1}\right), \qquad n_{max} < |n| \le n_{max} + m$$
+
+A taper keeps a little more of the reflection (the orders between $n_{max}$ and $n_{max} + m$ are partly retained) in exchange for confining its residual. In a synthetic test with a point scatterer $0.5\,m$ from the origin at $10\,GHz$ and $D = 3\,cm$, a taper of $10$ orders reduced the fraction of the sphere with residual above $-20\,dB$ from $40\%$ to $30\%$ while the RMS suppression went from $-13\,dB$ to $-11\,dB$. Gregson et al. note that a mode filter that is too abrupt degrades the result; the taper is the control for that.
+
+#### What to expect
+
+A reflection from a scatterer displaced $d$ from the origin appears, after the antenna is translated back to the origin, as a chirp whose modes extend to $|n| \approx k|d|$. Its low-order coefficients are not small, so a filter that keeps $|n| \le kD$ retains roughly a fraction $D/|d|$ of the reflection's energy, concentrated in the directions where the chirp's phase is stationary. MARS reduces reflections; it does not remove them.
 
 The mode limit $n_{max} = \lfloor kD \rfloor$ is meaningful only when the antenna is centred on the origin the pattern is referred to. Translate the pattern to its phase centre first (`translate`, or the Phase Center step of the viewer's processing pipeline, which runs before MARS) so that the filter acts on range reflections rather than on the antenna's own displaced-origin phase ramp.
 
@@ -149,6 +167,7 @@ The mode limit $n_{max} = \lfloor kD \rfloor$ is meaningful only when the antenn
 
 - **Maximum radial extent** $D$: the largest distance from the origin to any part of the antenna (in metres). This determines $n_{max}$ and thus the aggressiveness of the filtering.
 - A larger $D$ retains more modes (less filtering). Setting $D$ too small removes physical content; setting it too large leaves reflections.
+- **Taper**: the number of mode orders over which the cutoff rolls off. $0$ is a brick wall; a value of a few to ten orders reduces ringing at the cost of retaining slightly more of the reflection.
 
 ## Amplitude Normalization
 
