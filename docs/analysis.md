@@ -283,3 +283,16 @@ $$E_{diff}(\theta, \phi) = \frac{E_1(\theta, \phi)}{\max(|E'_2(\theta, \phi)|, 1
 - Quantifying measurement repeatability between test runs
 - Identifying systematic errors in measurement systems
 - Before/after comparison when applying corrections (e.g., MARS filtering)
+
+
+## Cut Metrics
+
+`farfield_spherical.metrics` reads the numbers usually taken from a plot by eye, from one trace at a time (θ in degrees against a value in dB), so a plot marker, a frequency sweep and a script all report the same values.
+
+- `analyze_cut(theta, values, levels_db=(3.0,))` returns a `CutMetrics`: the peak value and angle; a `Beamwidth` per requested level with interpolated left and right crossings and the width; the first local minimum either side of the main lobe and the deeper one's depth relative to the peak; and the highest lobe beyond those nulls as the first sidelobe level and angle. A sided cut (θ from 0) whose peak sits at θ = 0 only holds half the lobe, so the missing side is taken as the mirror image and `symmetric_assumed` is set.
+- `beamwidth_at(theta, values, level_db)` gives the width at any level, for example the 10 dB beamwidth of a feed.
+- `value_at(theta, values, at)` interpolates the trace at a chosen angle.
+- `boresight_xpd(theta, co_db, cx_db)` is the co minus cross-polar level at the sample nearest boresight.
+- `pattern_metrics(pattern, phi=None, component='e_co', levels_db=(3.0,))` evaluates every metric in `METRIC_NAMES` over the selected φ cuts and all frequencies, as arrays shaped (n_frequency, n_phi) with NaN where a metric does not exist. `cut_metrics(pattern, frequency, phi)` does one cut.
+
+Values are taken from the pattern as given, so apply normalization or processing first if the numbers should reflect it.

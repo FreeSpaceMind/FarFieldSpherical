@@ -74,6 +74,17 @@ from .utilities import (
 )
 
 # Package-level functions
+from .metrics import (
+    CutMetrics,
+    Beamwidth,
+    METRIC_NAMES,
+    analyze_cut,
+    beamwidth_at,
+    value_at,
+    boresight_xpd,
+    pattern_metrics,
+    cut_metrics,
+)
 from .package_functions import (
     average_patterns,
     difference_patterns,
@@ -82,6 +93,8 @@ from .package_functions import (
 )
 
 __all__ = [
+    'CutMetrics', 'Beamwidth', 'METRIC_NAMES', 'analyze_cut', 'beamwidth_at', 'value_at',
+    'boresight_xpd', 'pattern_metrics', 'cut_metrics',
     'FarFieldSpherical',
     'read_cut',
     'read_ffd',
