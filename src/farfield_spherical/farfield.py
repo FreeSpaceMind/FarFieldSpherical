@@ -6,7 +6,7 @@ import copy
 
 import numpy as np
 import xarray as xr
-from typing import Optional, Union, Tuple, Dict, Any, Set, Generator, Sequence
+from typing import Optional, Union, Dict, Any, Set, Generator, Sequence
 from pathlib import Path
 from contextlib import contextmanager
 from scipy.interpolate import interp1d
@@ -734,7 +734,8 @@ class FarFieldSpherical(FarFieldOperationsMixin):
 
     def calculate_spherical_modes(self, frequency: Optional[float] = None,
                                 nmax: Optional[int] = None,
-                                mmax: Optional[int] = None) -> 'SphericalWaveExpansion':
+                                mmax: Optional[int] = None,
+                                r0: Optional[float] = None) -> 'SphericalWaveExpansion':
         """Calculate spherical wave expansion from the far-field pattern.
 
         Parameters
@@ -745,6 +746,12 @@ class FarFieldSpherical(FarFieldOperationsMixin):
             Maximum polar mode index. If None, determined automatically.
         mmax : int, optional
             Maximum azimuthal mode index. If None, determined automatically.
+        r0 : float, optional
+            Radius in metres of the minimum sphere enclosing the sources,
+            forwarded to ``SphericalWaveExpansion.from_far_field``. It bounds
+            the mode content (N ≈ kr0) and is required for near-field
+            evaluation of the result; when None the expansion is sized from
+            the pattern alone.
         """
 
         if not _SWE_AVAILABLE:
@@ -781,6 +788,7 @@ class FarFieldSpherical(FarFieldOperationsMixin):
                 E_theta=E_theta,
                 E_phi=E_phi,
                 frequency=frequency,
+                r0=r0,
             )
 
         # Post-process: truncate to user-specified NMAX/MMAX

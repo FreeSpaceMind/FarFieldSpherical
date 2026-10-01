@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "farfield-spherical"
-version = "1.0.0"
+version = "1.1.0"
 description = "Core library for spherical far-field antenna pattern analysis"
 authors = [{name = "Justin Long", email = "justinwlong1@gmail.com"}]
 readme = "README.md"
@@ -33,7 +33,9 @@ dependencies = [
 
 [project.optional-dependencies]
 swe = [
-    "swe>=0.1.0",  # Your SWE package for spherical wave expansion
+    # The spherical wave expansion package (import name ``swe``) is not on
+    # PyPI; it is installed from its repository.
+    "spherical-wave-expansion @ git+https://github.com/FreeSpaceMind/spherical_wave_expansion.git",
 ]
 
 dev = [

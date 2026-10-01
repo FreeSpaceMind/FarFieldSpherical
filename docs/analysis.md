@@ -285,6 +285,31 @@ $$E_{diff}(\theta, \phi) = \frac{E_1(\theta, \phi)}{\max(|E'_2(\theta, \phi)|, 1
 - Before/after comparison when applying corrections (e.g., MARS filtering)
 
 
+## Equivalent Multipath Level
+
+`compare_patterns(pattern1, pattern2, component='e_co', complex_difference=False, normalize=True, theta_max=None)` reduces the difference between two patterns of the same antenna to the level of a stray signal that would explain it, the figure used in the MARS literature (Gregson, Newell, Hindman) to compare a measurement with and without reflection suppression, or two measurements of one antenna.
+
+### Formulation
+
+An error signal of amplitude $e$ superimposed on the pattern with opposite signs in the two measurements (a reflection whose path changes between them) separates the two by $2e$, so
+
+$$\mathrm{EMPL}(\theta, \phi) = 20\log_{10}\frac{\left|A(\theta, \phi) - B(\theta, \phi)\right|}{2\,|A|_{max}}$$
+
+with $A$ and $B$ the linear amplitudes of the selected component and $|A|_{max}$ the co-polar peak of pattern 1 at that frequency. The EMPL is therefore in dB relative to the peak of pattern 1, on the same scale as the pattern itself: a sidelobe at -30 dB that moves by 1 dB between two measurements corresponds to an EMPL near -55 dB.
+
+By default the amplitudes are differenced, which is what two amplitude plots show. With `complex_difference=True` the complex fields are differenced after aligning the global phase of pattern 2 to pattern 1 at boresight (as `difference_patterns` does), which also charges phase disagreement to the EMPL. With `normalize=True` (default) pattern 2 is scaled so its co-polar peak matches pattern 1's; set it False when both patterns carry the same absolute reference and a gain offset should count as error.
+
+### Return Values
+
+An `xarray.Dataset` on the (frequency, theta, phi) grid of the inputs:
+
+- `empl`: the per-point EMPL in dB.
+- `level_difference`: pattern 2 minus pattern 1 in dB at each point, for reading where the two disagree.
+- `empl_max`, `empl_rms`: per frequency, the EMPL of the largest and of the RMS difference over the summary region, which is the whole grid or `|theta| <= theta_max` when given.
+
+Both patterns must share the grid and frequencies; pattern 2 is converted to the polarization of pattern 1 when they differ. Points where pattern 1 is zero give `-inf` where the patterns agree and NaN where neither can be evaluated.
+
+
 ## Cut Metrics
 
 `farfield_spherical.metrics` reads the numbers usually taken from a plot by eye, from one trace at a time (θ in degrees against a value in dB), so a plot marker, a frequency sweep and a script all report the same values.

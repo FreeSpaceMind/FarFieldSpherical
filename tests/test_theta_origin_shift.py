@@ -10,7 +10,6 @@ on its own grid.
 import logging
 
 import numpy as np
-import pytest
 
 from farfield_spherical import FarFieldSpherical
 from .test_coordinate_transforms import analytic_fields, make, assert_grid, FREQS

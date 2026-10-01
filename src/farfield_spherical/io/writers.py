@@ -2,7 +2,6 @@ from typing import Union
 from pathlib import Path
 import warnings
 
-from ..farfield import FarFieldSpherical
 import numpy as np
 
 try:

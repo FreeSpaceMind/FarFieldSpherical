@@ -5,7 +5,7 @@ import logging
 
 import numpy as np
 from scipy import optimize
-from typing import Dict, Tuple, Optional, List, Union
+from typing import Tuple, Optional, Union
 import xarray as xr
 
 from .utilities import find_nearest, frequency_to_wavelength, lightspeed
@@ -349,12 +349,10 @@ def calculate_directivity(
     # Handle frequency selection
     if frequency is None:
         freq_idx = 0
-        freq = freq_array[freq_idx]
     else:
-        freq_val, freq_idx = find_nearest(freq_array, frequency)
+        _freq_val, freq_idx = find_nearest(freq_array, frequency)
         if isinstance(freq_idx, np.ndarray):
             freq_idx = freq_idx.item()
-        freq = freq_array[freq_idx]
     
     if not pattern.has_uniform_theta:
         raise NotImplementedError(

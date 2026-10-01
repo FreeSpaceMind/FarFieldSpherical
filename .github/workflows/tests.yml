@@ -19,19 +19,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check out spherical_wave_expansion
+        # Provides the optional swe package and the example .cut/.sph files
+        # the reader tests use (see tests/conftest.py).
+        uses: actions/checkout@v4
+        with:
+          repository: FreeSpaceMind/spherical_wave_expansion
+          path: spherical_wave_expansion
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Install package and dependencies
-        run: pip install -e ".[dev]"
+        run: |
+          pip install ./spherical_wave_expansion
+          pip install -e ".[dev]"
 
       - name: Run tests
-        # Tests needing files in tests/data/ skip themselves when absent.
+        # The Guppy horn tests need a measured file that is not versioned;
+        # they skip themselves when it is absent.
+        env:
+          FARFIELD_TEST_DATA: ${{ github.workspace }}/spherical_wave_expansion/tests
         run: python -m pytest tests/ -v --tb=short
 
-      - name: Lint for errors and undefined names
+      - name: Lint (syntax errors and every pyflakes check)
         run: |
           pip install flake8
-          python -m flake8 src/ tests/ --select=E9,F63,F7,F82,F821 --show-source
+          python -m flake8 src/ tests/ --select=E9,F --show-source

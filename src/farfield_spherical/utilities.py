@@ -2,7 +2,7 @@
 Common utility functions and constants for antenna pattern analysis.
 """
 import numpy as np
-from typing import Tuple, Union, Optional, List, Any, Callable
+from typing import Tuple, Union, List
 
 # Physical constants
 lightspeed = 299792458  # Speed of light in vacuum (m/s)

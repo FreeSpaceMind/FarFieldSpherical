@@ -15,7 +15,7 @@ from farfield_spherical import (
     calculate_directivity,
     difference_patterns,
 )
-from .test_coordinate_transforms import analytic_fields, make, FREQS
+from .test_coordinate_transforms import make, FREQS
 
 TH_S = np.arange(0, 181, 2.0)
 PHI_S = np.arange(0, 360, 15.0)

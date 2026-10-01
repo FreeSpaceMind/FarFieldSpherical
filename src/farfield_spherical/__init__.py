@@ -9,7 +9,7 @@ This package was formerly known as antenna_pattern, with the main class renamed
 from AntennaPattern to FarFieldSpherical for better descriptive naming.
 """
 
-__version__ = '1.0.0'
+__version__ = '1.1.0'
 __author__ = 'Justin Long'
 __email__ = 'justinwlong1@gmail.com'
 
@@ -88,6 +88,7 @@ from .metrics import (
 from .package_functions import (
     average_patterns,
     difference_patterns,
+    compare_patterns,
     detect_dual_sphere,
     split_dual_sphere
 )
@@ -141,6 +142,7 @@ __all__ = [
     'interpolate_crossing',
     'average_patterns',
     'difference_patterns',
+    'compare_patterns',
     'detect_dual_sphere',
     'split_dual_sphere'
 ]

@@ -295,6 +295,22 @@ print(pattern.data)
 #   e_cx: cross-polarized component
 ```
 
+## Running the tests
+
+```bash
+pip install -e ".[dev]"
+python -m pytest tests/ -v
+```
+
+The reader tests use the example `.cut` and `.sph` files versioned in the
+[spherical_wave_expansion](https://github.com/FreeSpaceMind/spherical_wave_expansion)
+repository (`tests/example.cut`, `tests/example.sph`). They are found
+automatically in a checkout next to this one (`../spherical_wave_expansion`),
+in the directory named by `FARFIELD_TEST_DATA`, or in `tests/data/` here; the
+SWE-dependent tests also need that package installed. The Guppy horn tests in
+`tests/test_crosspol.py` need the measured file `X5_horn_1.ffd` in
+`tests/data/`, which is not versioned; they skip without it.
+
 ## Requirements
 
 - Python >= 3.9

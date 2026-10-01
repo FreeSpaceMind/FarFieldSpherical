@@ -7,11 +7,11 @@ import copy
 
 import numpy as np
 import xarray as xr
-from typing import Tuple, Union, Optional, List, Any, Callable
+from typing import Tuple, Optional, List
 from scipy.interpolate import interp1d
 import logging
 
-from .utilities import lightspeed, frequency_to_wavelength, find_nearest
+from .utilities import lightspeed, find_nearest
 from .polarization import polarization_tp2xy, polarization_tp2rl, polarization_xy2tp
 
 from typing import TYPE_CHECKING

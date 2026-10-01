@@ -330,8 +330,6 @@ def read_ffd(file_path: Union[str, Path], frequency_hz: Optional[float] = None):
         
     # Convert to numpy
     frequency_np = np.array(frequency_list)
-    e_theta_np = np.array(e_theta_list)
-    e_phi_np = np.array(e_phi_list)
 
     # Reshape into 3D (freq, theta, phi) format. The file stores theta
     # varying slowest and phi fastest, so a plain reshape is enough; the old
@@ -483,7 +481,7 @@ def read_atams(file_path: Union[str, Path], interpolate: bool = False,
             continue
 
         az_actual = float(loc_parts[1])
-        el_actual = float(loc_parts[2]) if len(loc_parts) > 2 else 0.0
+        # loc_parts[2] is the actual elevation; it is not used by the reader
         head_actual = float(loc_parts[3]) if len(loc_parts) > 3 else 0.0
 
         # Parse field data

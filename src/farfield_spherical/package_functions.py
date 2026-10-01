@@ -4,10 +4,11 @@ Functions for working across multiple far-field spherical patterns.
 import logging
 
 import numpy as np
-from typing import List, Optional, Union, Dict, Any, Tuple
+import xarray as xr
+from typing import List, Optional, Dict, Any, Tuple
 
 from .farfield import FarFieldSpherical
-from .polarization import polarization_tp2xy, polarization_xy2tp, polarization_rl2tp
+from .polarization import polarization_xy2tp, polarization_rl2tp
 
 logger = logging.getLogger(__name__)
 
@@ -452,3 +453,132 @@ def split_dual_sphere(
     )
 
     return sphere1, sphere2
+
+def _same_grid(pattern1: FarFieldSpherical, pattern2: FarFieldSpherical) -> None:
+    if not np.array_equal(pattern1.theta_angles, pattern2.theta_angles):
+        raise ValueError("Patterns have different theta angles")
+    if not np.array_equal(pattern1.phi_angles, pattern2.phi_angles):
+        raise ValueError("Patterns have different phi angles")
+    if not np.array_equal(pattern1.frequencies, pattern2.frequencies):
+        raise ValueError("Patterns have different frequencies")
+
+
+def compare_patterns(
+    pattern1: FarFieldSpherical,
+    pattern2: FarFieldSpherical,
+    component: str = 'e_co',
+    complex_difference: bool = False,
+    normalize: bool = True,
+    theta_max: Optional[float] = None,
+) -> xr.Dataset:
+    """
+    Compare two patterns through their equivalent multipath level (EMPL).
+
+    The EMPL expresses the difference between two measurements of the same
+    antenna as the level of a stray signal that would account for it. Two
+    patterns that differ by an error signal of amplitude ``e`` superimposed
+    with opposite signs (the usual case for a reflection whose phase changes
+    between the two measurements) differ by ``2e``, so::
+
+        EMPL(theta, phi) = 20 log10( |A - B| / (2 |A|max) )
+
+    where ``A`` and ``B`` are the linear field amplitudes of the two patterns
+    and ``|A|max`` is the peak of the selected component of ``pattern1`` at
+    that frequency: the EMPL is in dB relative to the peak of pattern 1, as
+    plotted in the MARS literature (Gregson, Newell, Hindman).
+
+    By default the amplitudes are compared (``|A|`` and ``|B|``), which is
+    what two amplitude plots show. With ``complex_difference=True`` the
+    complex fields are differenced after aligning the global phase of
+    pattern 2 to pattern 1 at boresight, as ``difference_patterns`` does;
+    that also charges phase disagreement to the EMPL.
+
+    Args:
+        pattern1: Reference pattern (the EMPL is relative to its peak).
+        pattern2: Pattern to compare; it is converted to the polarization of
+            ``pattern1`` if the two differ.
+        component: 'e_co' (default), 'e_cx', 'e_theta' or 'e_phi'. For the
+            cross-polar component the level stays relative to the co-polar
+            peak of pattern 1, so a 'e_cx' EMPL reads on the same scale as a
+            cross-polar pattern.
+        complex_difference: Difference the complex fields instead of the
+            amplitudes.
+        normalize: Scale pattern 2 so its co-polar peak matches pattern 1's
+            before comparing (default). Set False when both carry the same
+            absolute gain reference and a level offset should count.
+        theta_max: Restrict the summary values to |theta| <= theta_max
+            degrees (for example the main beam or the forward hemisphere).
+            The per-point EMPL is always returned over the full grid.
+
+    Returns:
+        xarray.Dataset with coordinates (frequency, theta, phi) holding
+        ``empl`` (dB, per point), ``level_difference`` (pattern 2 minus
+        pattern 1 in dB, per point) and per-frequency ``empl_max`` and
+        ``empl_rms`` (the EMPL of the peak and of the RMS difference over
+        the summary region). The attributes record the options used.
+    """
+    _same_grid(pattern1, pattern2)
+    if component not in ('e_co', 'e_cx', 'e_theta', 'e_phi'):
+        raise ValueError(f"Unknown component {component!r}; expected e_co, e_cx, e_theta or e_phi")
+    if pattern2.polarization != pattern1.polarization:
+        pattern2 = pattern2.copy()
+        pattern2.change_polarization(pattern1.polarization)
+
+    theta = np.asarray(pattern1.theta_angles, dtype=float)
+    boresight_idx = int(np.argmin(np.abs(theta)))
+    co1 = pattern1.data.e_co.values
+    co2 = pattern2.data.e_co.values
+    a = pattern1.data[component].values.astype(complex)
+    b = pattern2.data[component].values.astype(complex)
+    n_freq = a.shape[0]
+
+    empl = np.full(a.shape, np.nan)
+    level_difference = np.full(a.shape, np.nan)
+    empl_max = np.full(n_freq, np.nan)
+    empl_rms = np.full(n_freq, np.nan)
+    region = np.ones(a.shape[1:], dtype=bool)
+    if theta_max is not None:
+        region &= (np.abs(theta) <= float(theta_max))[:, None]
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        for f in range(n_freq):
+            peak1 = float(np.nanmax(np.abs(co1[f])))
+            peak2 = float(np.nanmax(np.abs(co2[f])))
+            if not np.isfinite(peak1) or peak1 <= 0:
+                continue
+            scale = peak1 / peak2 if (normalize and peak2 > 0) else 1.0
+            a_f = a[f]
+            b_f = b[f] * scale
+            if complex_difference:
+                phase_offset = np.angle(co1[f, boresight_idx, 0]) - np.angle(co2[f, boresight_idx, 0])
+                diff = np.abs(a_f - b_f * np.exp(1j * phase_offset))
+            else:
+                diff = np.abs(np.abs(a_f) - np.abs(b_f))
+            empl[f] = 20.0 * np.log10(diff / (2.0 * peak1))
+            level_difference[f] = 20.0 * np.log10(np.abs(b_f) / np.abs(a_f))
+            selected = diff[region]
+            selected = selected[np.isfinite(selected)]
+            if selected.size:
+                empl_max[f] = 20.0 * np.log10(selected.max() / (2.0 * peak1))
+                empl_rms[f] = 20.0 * np.log10(np.sqrt(np.mean(selected ** 2)) / (2.0 * peak1))
+
+    coords = {'frequency': np.asarray(pattern1.frequencies, dtype=float),
+              'theta': theta, 'phi': np.asarray(pattern1.phi_angles, dtype=float)}
+    result = xr.Dataset(
+        {
+            'empl': (('frequency', 'theta', 'phi'), empl),
+            'level_difference': (('frequency', 'theta', 'phi'), level_difference),
+            'empl_max': (('frequency',), empl_max),
+            'empl_rms': (('frequency',), empl_rms),
+        },
+        coords=coords,
+        attrs={'component': component, 'complex_difference': bool(complex_difference),
+               'normalize': bool(normalize),
+               'theta_max': float(theta_max) if theta_max is not None else None,
+               'reference': 'dB relative to the co-polar peak of pattern 1'},
+    )
+    result['empl'].attrs['units'] = 'dB'
+    result['level_difference'].attrs['units'] = 'dB'
+    result['empl_max'].attrs['units'] = 'dB'
+    result['empl_rms'].attrs['units'] = 'dB'
+    return result

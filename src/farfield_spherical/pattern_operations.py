@@ -3,12 +3,9 @@ Standalone pattern operation functions for FarFieldSpherical objects.
 """
 
 import numpy as np
-import xarray as xr
-from typing import Tuple, Union, Optional, List, Any, Callable
-from scipy.interpolate import interp1d
+from typing import Tuple, Union
 
-from .utilities import lightspeed, frequency_to_wavelength, find_nearest
-from .polarization import polarization_tp2xy, polarization_tp2rl, polarization_xy2tp
+from .utilities import frequency_to_wavelength
 
 
 # Standalone utility functions that don't operate on patterns directly
