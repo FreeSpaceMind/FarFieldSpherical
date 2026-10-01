@@ -307,7 +307,7 @@ The reader tests use the example `.cut` and `.sph` files versioned in the
 repository (`tests/example.cut`, `tests/example.sph`). They are found
 automatically in a checkout next to this one (`../spherical_wave_expansion`),
 in the directory named by `FARFIELD_TEST_DATA`, or in `tests/data/` here; the
-SWE-dependent tests also need that package installed. The Guppy horn tests in
+SWE-dependent tests also need that package installed. The example horn tests in
 `tests/test_crosspol.py` need the measured file `X5_horn_1.ffd` in
 `tests/data/`, which is not versioned; they skip without it.
 

@@ -38,7 +38,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run tests
-        # The Guppy horn tests need a measured file that is not versioned;
+        # The example horn tests need a measured file that is not versioned;
         # they skip themselves when it is absent.
         env:
           FARFIELD_TEST_DATA: ${{ github.workspace }}/spherical_wave_expansion/tests

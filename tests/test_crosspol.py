@@ -6,7 +6,7 @@ Two groups:
 * Synthetic patterns with closed-form co/cross fields, so every metric can be
   checked against an analytic value and the error paths can be exercised
   without data files.
-* Regression against the Guppy horn HFSS export (X5_horn_1.ffd). These are
+* Regression against the example horn HFSS export (X5_horn_1.ffd). These are
   skipped when the file is not present in tests/data/.
 """
 import logging
@@ -326,25 +326,25 @@ class TestErrors:
 
 
 # ---------------------------------------------------------------------------
-# Regression against the Guppy horn export
+# Regression against the example horn export
 # ---------------------------------------------------------------------------
 
 # Reference values at theta_e = 35 deg, from the requirements document.
-GUPPY_FREQS_GHZ = np.array([8, 9, 10, 11, 12, 13, 14, 15])
-GUPPY_REF = {
+HORN_FREQS_GHZ = np.array([8, 9, 10, 11, 12, 13, 14, 15])
+HORN_REF = {
     'edge_taper_db': [-10.98, -12.22, -12.91, -12.29, -11.24, -13.12, -13.37, -12.43],
     'xpd_int_db':    [45.92, 33.79, 27.39, 24.67, 21.55, 28.77, 31.73, 27.97],
     'xpd_worst_db':  [35.87, 23.32, 17.93, 17.33, 15.44, 22.60, 20.79, 16.36],
     'xpol_peak_db':  [44.68, 34.50, 28.56, 25.46, 21.47, 27.24, 30.05, 25.22],
     'n0_level_db':   [77.5, 77.8, 78.2, 74.2, 65.9, 70.7, 68.0, 65.2],
 }
-GUPPY_TOL = {'edge_taper_db': 0.05, 'xpd_int_db': 0.05, 'xpd_worst_db': 0.05,
+HORN_TOL = {'edge_taper_db': 0.05, 'xpd_int_db': 0.05, 'xpd_worst_db': 0.05,
              'xpol_peak_db': 0.05, 'n0_level_db': 0.3}
-GUPPY_XPD_INT_25 = [47.07, 36.67, 29.83, 26.38, 22.72, 28.64, 32.22, 28.93]
+HORN_XPD_INT_25 = [47.07, 36.67, 29.83, 26.38, 22.72, 28.64, 32.22, 28.93]
 
 
 @requires_ffd
-class TestGuppyHorn:
+class TestExampleHorn:
     @pytest.fixture(scope='class')
     def pattern(self):
         return read_ffd(FFD_FILE)
@@ -355,12 +355,12 @@ class TestGuppyHorn:
 
     def test_grid_and_polarization(self, pattern):
         assert pattern.polarization == 'x'
-        np.testing.assert_allclose(pattern.frequencies / 1e9, GUPPY_FREQS_GHZ)
+        np.testing.assert_allclose(pattern.frequencies / 1e9, HORN_FREQS_GHZ)
 
-    @pytest.mark.parametrize('name', list(GUPPY_REF))
+    @pytest.mark.parametrize('name', list(HORN_REF))
     def test_reference_values_35deg(self, report, name):
-        np.testing.assert_allclose(report[name].values, GUPPY_REF[name],
-                                   atol=GUPPY_TOL[name], err_msg=name)
+        np.testing.assert_allclose(report[name].values, HORN_REF[name],
+                                   atol=HORN_TOL[name], err_msg=name)
 
     def test_mode_spectrum(self, report):
         rel = report['mode_power_rel_db'].values
@@ -370,7 +370,7 @@ class TestGuppyHorn:
 
     def test_xpd_int_25deg(self, pattern):
         np.testing.assert_allclose(integrated_xpd(pattern, 25.0).values,
-                                   GUPPY_XPD_INT_25, atol=0.05)
+                                   HORN_XPD_INT_25, atol=0.05)
 
     def test_cone_edge_insensitivity_11ghz(self, pattern):
         i = 3  # 11 GHz
@@ -394,6 +394,6 @@ class TestGuppyHorn:
         r = check_requirements(report, xpd_int_min_db=20, n0_min_db=40,
                                bands_hz=[(8e9, 11e9), (13e9, 15e9)])
         assert r.attrs['all_pass'] is True
-        expected_in_band = GUPPY_FREQS_GHZ != 12
+        expected_in_band = HORN_FREQS_GHZ != 12
         np.testing.assert_array_equal(r['in_band'].values, expected_in_band)
         assert r.attrs['worst_xpd_int_in_band_db'] == pytest.approx(24.67, abs=0.05)
